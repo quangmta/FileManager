@@ -45,6 +45,20 @@ class FileManagerTest(unittest.TestCase):
         self.assertEqual(self.client.get('/api/list').status_code, 401)
         self.assertEqual(self.client.post('/api/login', json={'username': 'admin', 'password': 'wrong'}).status_code, 401)
 
+    def test_disk_uses_configured_mounts(self):
+        self.login()
+        with patch.dict(os.environ, {'FILEMANAGER_MOUNTS': str(self.root)}):
+            response = self.client.get('/api/disk')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([entry['mount'] for entry in response.json['partitions']], [str(self.root)])
+
+    def test_disk_non_linux_falls_back_without_proc_mounts(self):
+        self.login()
+        with patch.dict(os.environ, {}, clear=True), patch.object(fm.platform, 'system', return_value='QNX'):
+            response = self.client.get('/api/disk')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([entry['mount'] for entry in response.json['partitions']], [str(self.root)])
+
     def test_reader_is_forbidden_from_mutating_and_audit(self):
         token = self.login('reader', 'strong-reader-password')
         self.assertEqual(self.post('/api/create', token, {'path': '', 'name': 'nope', 'type': 'file'}).status_code, 403)

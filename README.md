@@ -125,15 +125,67 @@ Tùy chọn độ rộng cột được lưu trong trình duyệt đang dùng. C
 
 `FILEMANAGER_ROOT` là ranh giới bảo mật ứng dụng. Đường dẫn `..`, đường dẫn tuyệt đối và symbolic link bị từ chối; thư mục dữ liệu ứng dụng không được liệt kê. Tệp hệ thống vẫn chịu kiểm soát quyền Unix của user chạy dịch vụ. Không cấu hình root là `/` nếu không thực sự cần thiết.
 
-### Kiểm tra runtime QNX/KR260
+### Triển khai trên QNX/KR260
 
-`tools/check_qnx_runtime.py` kiểm tra phiên bản Python, Flask/Werkzeug, SQLite, TLS, ZIP Deflate/zlib, thao tác filesystem và vùng tạm có thể ghi. Chạy nó trên chính image QNX mục tiêu:
+Ứng dụng không gọi lệnh Linux như `df`, `stat`, `zip`, không đọc `/proc/mounts` trên QNX và không phụ thuộc systemd. Python/Flask, SQLite, ZIP, TLS và các API filesystem phải có sẵn trong image target. Đây là hướng dẫn porting: cần build và kiểm chứng trên đúng image/BSP KR260 trước khi đưa vào sử dụng; kiểm tra trên Ubuntu không chứng minh ABI hoặc driver QNX tương thích.
+
+#### 1. Kiểm tra image và Python
+
+Đảm bảo BSP/network driver cho KR260 hoạt động, thiết bị có địa chỉ IP và có một mount dữ liệu persistent ghi được. Xác nhận Python target và module ABI ngay trên board:
 
 ```sh
-python3 tools/check_qnx_runtime.py
+uname -a
+python3.11 -V
+python3.11 -c 'import ssl, sqlite3, zlib, zipfile; print(ssl.OPENSSL_VERSION)'
 ```
 
-Mọi kiểm tra đạt chỉ xác nhận các API/runtime được import và thao tác cơ bản. Vẫn cần build/chạy thử Flask và ứng dụng trên BSP QNX KR260 thực tế, xác nhận network/TLS, quyền filesystem và cơ chế khởi động dịch vụ của image. QNX không dùng mẫu triển khai systemd Linux ở trên.
+Đừng cài wheel hoặc thư viện native build cho Ubuntu lên QNX. Cần dùng package Python target được build cho đúng QNX SDP/architecture, hoặc build/cross-compile từ QNX SDP host tools. Tài liệu QNX hiện có Python 3.11 cho SDP 7.1; ghi chú SDP 8.0.3 có Python 3.13. Vì vậy Python 3.11 trên một image SDP 8.0/KR260 có thể là bản tùy biến; phải xác nhận nguồn build, ABI và tương thích package. Đóng gói các dependency của `requirements.txt` (Flask, Werkzeug và dependency gián tiếp) cho đúng target. `gunicorn` trong requirements chỉ dành cho Linux; không dùng trên QNX nếu chưa port và kiểm thử riêng.
+
+Chép mã nguồn (`app.py`, `static/`, `tools/`) và Python packages tương thích vào image/board. Checker giúp báo thiếu tính năng trước khi khởi chạy:
+
+```sh
+python3.11 tools/check_qnx_runtime.py
+```
+
+Checker cần kết thúc mã 0. Nó kiểm tra module, SQLite, ZIP Deflate, TLS context, loopback socket và filesystem cơ bản; không kiểm tra BSP, certificate chain, network từ xa, độ bền ổ đĩa hay khả năng phục vụ tải đồng thời.
+
+#### 2. Chọn thư mục và quyền ghi
+
+Ví dụ dưới đây giả định phân vùng dữ liệu được mount tại `/fs/data`; thay bằng mount point thực tế của image. Không dùng vùng dữ liệu tạm trong RAM để lưu database hoặc file người dùng. Cấp quyền tối thiểu cho user dịch vụ, và bảo đảm filesystem hỗ trợ các thao tác POSIX cần dùng như `chmod`, rename nguyên tử (`os.replace`) và SQLite locking.
+
+```sh
+mkdir -p /fs/data/filescope/root /fs/data/filescope/state /fs/data/filescope/tmp
+export FILEMANAGER_ROOT=/fs/data/filescope/root
+export FILEMANAGER_DB=/fs/data/filescope/state/filemanager.sqlite3
+export FILEMANAGER_TMP=/fs/data/filescope/tmp
+export FILEMANAGER_MOUNTS=/,/fs/data
+export FILEMANAGER_MIN_FREE_SPACE=67108864
+export FILEMANAGER_SECRET='THAY_BANG_CHUOI_NGAU_NHIEN_DAI'
+```
+
+Tạo secret ngẫu nhiên trên máy tin cậy rồi chuyển vào cấu hình bảo mật của image; không commit secret vào Git. Tài khoản QNX chạy app cần quyền đọc/ghi root và database, ghi thư mục tạm, cùng các quyền Unix mà người dùng web được phép thao tác. App không tự nâng quyền thành root. `FILEMANAGER_MOUNTS` là danh sách mount point phân cách bằng `:`; trên QNX nên khai báo rõ các mount muốn hiển thị ở trang dung lượng. Root được tự thêm nếu thiếu. Nếu không đặt biến này, QNX chỉ báo mount của `FILEMANAGER_ROOT`.
+
+#### 3. Tạo admin và khởi chạy thử
+
+```sh
+python3.11 app.py create-admin admin
+python3.11 app.py serve --host 0.0.0.0 --port 8080
+```
+
+Từ máy khách truy cập `http://<IP-KR260>:8080`. Lệnh `serve` dùng Flask development server, chỉ thích hợp bring-up trong mạng tin cậy. Để triển khai thật, chạy app dưới một supervisor/startup service của image QNX với user ít quyền, tự khởi động lại khi lỗi và cấu hình log/giám sát theo BSP; không dùng unit systemd Linux. Chưa có WSGI server production được xác nhận trên QNX trong repo này.
+
+Để bật HTTPS trực tiếp, cài certificate/private key phù hợp target rồi chạy:
+
+```sh
+export FILEMANAGER_HTTPS=1
+python3.11 app.py serve --host 0.0.0.0 --port 8443 --cert /path/to/server.crt --key /path/to/server.key
+```
+
+Truy cập `https://<IP-hoac-hostname-KR260>:8443`; trình duyệt cần tin cậy certificate. Nếu TLS/network stack của image không hoạt động với Python `ssl`, cần sửa image/package SSL thay vì bỏ qua TLS khi truy cập từ mạng không tin cậy. Bảo vệ private key và database bằng quyền file của QNX.
+
+#### 4. Thử nghiệm trên target
+
+Thực hiện các ca TC-01 đến TC-21 bên dưới với dữ liệu thử, đặc biệt TC-04/05/06/08/10/12/13/18. Xác nhận các phân vùng trong `FILEMANAGER_MOUNTS` đúng với mount thật, upload lớn không làm đầy RAM, database vẫn tồn tại sau reboot, quyền file đúng với filesystem đang dùng, và truy cập HTTPS được từ máy khách. Kết quả trên Linux chỉ kiểm chứng chức năng chung; chỉ ghi nhận tương thích QNX sau khi các ca này chạy đạt trên chính board/image.
 
 ## Kiểm tra
 
@@ -184,5 +236,7 @@ Các trường hợp kiểm tra chấp nhận thủ công:
 | `FILEMANAGER_MAX_BACKUP` | `33554432` | Kích thước backup JSON tối đa |
 | `FILEMANAGER_MIN_FREE_SPACE` | `67108864` | Dung lượng phải còn lại sau upload/giải nén |
 | `FILEMANAGER_SESSION_IDLE` | `1800` | Thời gian idle tối đa của phiên, đơn vị giây |
+| `FILEMANAGER_MOUNTS` | tự dò trên Linux; QNX chỉ dùng root | Danh sách mount points phân cách bằng `:` (QNX nên đặt tường minh) |
+| `FILEMANAGER_TMP` | thư mục tạm mặc định của Python | Thư mục writable dùng để spool upload và tạo ZIP; trên thiết bị nên đặt nơi có dung lượng phù hợp |
 
 Đặt `FILEMANAGER_MIN_FREE_SPACE=0` nếu muốn tắt phần dung lượng dự phòng. Không nên đặt quá cao trên thiết bị có phân vùng nhỏ; giá trị này vừa tạo cảnh báo trên trang dung lượng vừa chặn upload/giải nén có thể làm dung lượng trống giảm xuống dưới ngưỡng.

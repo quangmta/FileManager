@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Root-confined Linux web file manager."""
-import argparse, io, json, os, re, secrets, shutil, sqlite3, stat, tempfile, time, zipfile, zlib
+import argparse, io, json, os, re, secrets, shutil, sqlite3, stat, tempfile, time, zipfile, zlib, platform
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path, PurePosixPath
@@ -18,6 +18,11 @@ MAX_SEARCH_SCAN=int(os.environ.get('FILEMANAGER_MAX_SEARCH_SCAN','100000'))
 MAX_SESSION_IDLE=int(os.environ.get('FILEMANAGER_SESSION_IDLE','1800'))
 MAX_BACKUP=int(os.environ.get('FILEMANAGER_MAX_BACKUP',str(32*1024**2)))
 MIN_FREE_SPACE=int(os.environ.get('FILEMANAGER_MIN_FREE_SPACE',str(64*1024**2)))
+TEMP_DIR=os.environ.get('FILEMANAGER_TMP') or None
+if TEMP_DIR:
+    TEMP_DIR=str(Path(TEMP_DIR).expanduser().resolve())
+    Path(TEMP_DIR).mkdir(parents=True,exist_ok=True)
+    tempfile.tempdir=TEMP_DIR
 app=Flask(__name__,static_folder='static',static_url_path='/static')
 app.secret_key=os.environ.get('FILEMANAGER_SECRET','')
 app.config.update(MAX_CONTENT_LENGTH=MAX_UPLOAD+1024*1024,SESSION_COOKIE_HTTPONLY=True,SESSION_COOKIE_SAMESITE='Lax',SESSION_COOKIE_SECURE=os.environ.get('FILEMANAGER_HTTPS')=='1')
@@ -208,11 +213,22 @@ def tree():
 @app.get('/api/disk')
 @require()
 def disk():
-    data=[];seen=set()
-    try:
-        with open('/proc/mounts',encoding='utf8') as mounts_file:mounts=[line.split()[1] for line in mounts_file if len(line.split())>=2]
-    except OSError:mounts=[]
-    if not mounts:mounts=[str(ROOT)]
+    data=[];seen=set();configured=os.environ.get('FILEMANAGER_MOUNTS')
+    if configured:
+        mounts=[part for part in configured.split(os.pathsep) if part]
+    elif platform.system()=='Linux':
+        mounts=[]
+        try:
+            with open('/proc/mounts',encoding='utf8') as mounts_file:
+                for line in mounts_file:
+                    fields=line.split()
+                    if len(fields)>=2:
+                        mounts.append(re.sub(r'\\([0-7]{3})',lambda match:chr(int(match.group(1),8)),fields[1]))
+        except OSError:pass
+    else:
+        # Non-Linux targets (including QNX) should provide mount points explicitly.
+        mounts=[]
+    if str(ROOT) not in mounts:mounts.append(str(ROOT))
     for m in mounts:
         try:
             u=shutil.disk_usage(m);key=(os.stat(m).st_dev,u.total)
@@ -225,7 +241,7 @@ def disk():
 def download():
     p=resolve(request.args.get('path',''))
     if p.is_dir():
-        archive=tempfile.TemporaryFile(mode='w+b')
+        archive=tempfile.TemporaryFile(mode='w+b',dir=TEMP_DIR)
         try:
             count=0;plain_bytes=0
             with zipfile.ZipFile(archive,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=1,allowZip64=True) as bundle:
