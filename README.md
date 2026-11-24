@@ -9,7 +9,7 @@
 - Tải nhiều tệp lên, tải tệp xuống; tạo, đổi tên, xóa tệp/thư mục và `chmod`.
 - Tải thư mục xuống dạng ZIP; tải ZIP lên và giải nén an toàn trong thư mục đang mở, có giới hạn số mục/kích thước, chống path traversal và xung đột tên.
 - Tìm kiếm đệ quy theo tên, loại, dung lượng và ngày sửa đổi; kết quả tối đa 1.000 mục.
-- Tiến độ/hủy tải lên; kiểm tra dung lượng trống trước khi ghi và cảnh báo phân vùng gần mức dự phòng.
+- Tiến độ, tốc độ và nút hủy khi tải lên; trình duyệt quản lý tiến độ/hủy tải xuống. Kiểm tra dung lượng trống trước khi ghi và cảnh báo phân vùng gần mức dự phòng.
 - Thống kê dung lượng đã dùng/còn trống trên các phân vùng gắn kết.
 - Tài khoản `read` (chỉ xem/tải), `write` (thêm/sửa/xóa/chmod), `admin` (toàn quyền và quản lý người dùng/nhật ký).
 - Nhật ký đăng nhập/thất bại, tải lên, CRUD, chmod và quản lý tài khoản; lưu SQLite, hiển thị 500 sự kiện gần nhất.
@@ -113,13 +113,15 @@ WantedBy=multi-user.target
 1. Mở địa chỉ HTTPS, đăng nhập bằng tài khoản admin đã tạo.
 2. Chọn thư mục từ cây bên trái hoặc breadcrumb. Dùng nút ←/→ phía trên để quay lại/tiến tới lịch sử thư mục. Bấm tên tệp hoặc biểu tượng xem trước để mở định dạng hỗ trợ trong tab mới; dùng biểu tượng tải xuống cho tệp cần lưu về máy. Thư mục mở khi bấm tên.
 3. Dùng các nút trên trang để tải lên, tạo thư mục/tệp. Các nút ở từng dòng hỗ trợ Copy, Cut, đổi tên, đổi quyền dạng bát phân (ví dụ `640`) và xóa. Chọn **Paste here** sau khi mở thư mục đích; Copy có thể dán nhiều lần, Cut sẽ được xóa khỏi clipboard sau khi dán thành công.
-4. Nút **ZIP** tải tệp `.zip` lên rồi giải nén vào thư mục đang mở. Tệp có đường dẫn bất hợp lệ, symbolic link, nội dung vượt giới hạn hoặc trùng tên sẽ bị từ chối; các mục không bị ghi đè.
-5. Dùng biểu mẫu **Tìm trong thư mục này và thư mục con** để lọc theo tên, loại, KB và ngày. Tìm kiếm trả tối đa 1.000 mục.
-6. Tải lên hiển thị tiến độ; nút **Hủy** ngắt yêu cầu. Trình duyệt dùng trình tải riêng để hiển thị tiến độ tải xuống và hỗ trợ hủy tải. Upload/giải nén bị chặn nếu không đủ dung lượng trống hoặc sẽ phá mức dự phòng cấu hình.
-7. Admin vào **Quản trị** để tạo tài khoản với vai trò `read`, `write`, hoặc `admin`, xem nhật ký/phiên, thu hồi phiên khác, tải bản sao lưu hoặc khôi phục tài khoản + nhật ký. Khôi phục thay thế danh sách tài khoản và audit, giữ phiên admin hiện tại nếu tài khoản đó có trong backup; không bao gồm dữ liệu file, secret hay biến môi trường.
-8. Vào **Dung lượng ổ đĩa** để xem phân vùng, phần trăm dùng, dung lượng còn trống.
+4. Nút **ZIP** tải tệp `.zip` lên rồi giải nén vào thư mục đang mở. Hệ thống không cho ZIP ghi đè mục đã có; ZIP lỗi, có đường dẫn tuyệt đối/`..`, symbolic link, tỷ lệ nén bất thường hoặc vượt giới hạn sẽ bị từ chối. Tệp ZIP tải lên chịu `FILEMANAGER_MAX_UPLOAD`; tổng dữ liệu giải nén và số mục chịu `FILEMANAGER_MAX_EXTRACTED`/`FILEMANAGER_MAX_ARCHIVE_ENTRIES`.
+5. Dùng biểu mẫu **Tìm trong thư mục này và thư mục con** để tìm theo tên và lọc theo loại, dung lượng KB hoặc ngày sửa đổi. Ngày mở trong popover nổi; nhấn lại tiêu đề hoặc bấm bên ngoài để thu gọn. Khoảng ngày đã chọn vẫn hiện trên tiêu đề. Kết quả tối đa 1.000 mục và hệ thống quét tối đa `FILEMANAGER_MAX_SEARCH_SCAN` mục.
+6. Trong bảng, nhấn tiêu đề cột để sắp xếp; nhấn lại để đảo chiều. Nút ▾ cạnh tiêu đề mở bộ lọc theo tên, kích thước, quyền hoặc ngày. Kéo vạch ⋮ để đổi rộng cột; bảng hiện thanh cuộn ngang nếu vượt vùng xem. Tên dài được rút gọn trong ô.
+7. Tải lên hiển thị phần trăm, tốc độ và nút **Hủy**. Nút này hủy request từ trình duyệt; nếu server đã hoàn tất ghi trước khi nhận lệnh hủy thì tệp có thể đã được lưu. Download dùng trình tải của trình duyệt để hỗ trợ tiến độ và hủy mà không phải giữ toàn bộ file trong bộ nhớ giao diện. Upload/giải nén bị chặn nếu không đủ dung lượng trống hoặc sẽ làm mức trống thấp hơn `FILEMANAGER_MIN_FREE_SPACE`.
+8. Admin vào **Quản trị** để tạo tài khoản `read`, `write`, `admin`, xem nhật ký/phiên và thu hồi phiên khác. Phiên tự hết hạn sau `FILEMANAGER_SESSION_IDLE` giây không hoạt động (mặc định 30 phút); phiên hiện tại được đánh dấu và không thể thu hồi từ chính nó.
+9. Trong **Sao lưu & khôi phục**, tải JSON backup trước khi khôi phục. Backup chứa tài khoản (bao gồm password hash) và tối đa 100.000 sự kiện audit, kèm cờ nếu audit bị cắt bớt. Khôi phục thay thế danh sách tài khoản và audit, yêu cầu xác nhận và giữ phiên admin hiện tại nếu tài khoản đó có trong backup. Thông tin root/giới hạn trong backup chỉ để tham khảo; khôi phục không đổi biến môi trường, secret hay nội dung file. Giữ file backup ở nơi được bảo vệ như database.
+10. Vào **Dung lượng ổ đĩa** để xem phân vùng, phần trăm dùng, dung lượng còn trống. Cảnh báo hiện trên phân vùng có mức trống thấp hơn ngưỡng dự phòng.
 
-Trong danh sách tệp, nhấn tiêu đề cột để sắp xếp tăng dần; nhấn lại để đảo chiều. Nút ▾ cạnh tiêu đề mở bộ lọc theo tên, kích thước, quyền hoặc thời gian sửa đổi. Kéo vạch ⋮ giữa các tiêu đề để thay đổi độ rộng; các cột kế tiếp dịch theo và bảng có thanh cuộn ngang khi vượt vùng xem. Tên quá dài được rút gọn trong ô; độ rộng cột đã chỉnh sẽ được lưu trong trình duyệt.
+Tùy chọn độ rộng cột được lưu trong trình duyệt đang dùng. Copy/Cut clipboard cũng chỉ nằm trong giao diện trình duyệt hiện tại.
 
 `FILEMANAGER_ROOT` là ranh giới bảo mật ứng dụng. Đường dẫn `..`, đường dẫn tuyệt đối và symbolic link bị từ chối; thư mục dữ liệu ứng dụng không được liệt kê. Tệp hệ thống vẫn chịu kiểm soát quyền Unix của user chạy dịch vụ. Không cấu hình root là `/` nếu không thực sự cần thiết.
 
@@ -163,6 +165,9 @@ Các trường hợp kiểm tra chấp nhận thủ công:
 | TC-16 | Không hoạt động quá `FILEMANAGER_SESSION_IDLE`; admin thu hồi phiên | API hết hạn trả HTTP 401; phiên bị thu hồi phải đăng nhập lại |
 | TC-17 | Tải backup rồi khôi phục JSON hợp lệ/không hợp lệ | Backup chỉ có tài khoản + audit; JSON sai bị từ chối; restore có xác nhận và audit event |
 | TC-18 | Chạy `tools/check_qnx_runtime.py` trên image KR260/QNX | Báo rõ runtime/module/filesystem còn thiếu; không thay thế kiểm thử BSP thực tế |
+| TC-19 | Mở/thu gọn bộ chọn ngày trong biểu mẫu tìm kiếm | Bộ chọn nổi, không làm thay đổi chiều cao thanh; khoảng ngày vẫn hiện sau khi thu gọn; click ngoài đóng popover |
+| TC-20 | Sắp xếp và lọc cột trong lúc đang xem kết quả tìm kiếm | Sắp xếp/lọc áp dụng lên kết quả hiện tại; Xóa tìm kiếm trở lại danh sách thư mục |
+| TC-21 | Mở form có trường bắt buộc rồi nhấn **Hủy** hoặc **×** khi để trống | Modal đóng ngay, không hiện thông báo validation; nhấn **Xác nhận** vẫn kiểm tra trường bắt buộc |
 
 ## Cấu hình
 
@@ -174,8 +179,10 @@ Các trường hợp kiểm tra chấp nhận thủ công:
 | `FILEMANAGER_HTTPS` | `0` | Đặt `1` khi trình duyệt luôn dùng HTTPS |
 | `FILEMANAGER_MAX_UPLOAD` | `1073741824` | Kích thước tải lên tối đa theo byte |
 | `FILEMANAGER_MAX_EXTRACTED` | `2147483648` | Tổng byte giải nén hoặc đóng gói thư mục tối đa |
-| `FILEMANAGER_MAX_ARCHIVE_ENTRIES` | `10000` | Số tệp tối đa trong archive |
+| `FILEMANAGER_MAX_ARCHIVE_ENTRIES` | `10000` | Số mục tối đa trong archive |
 | `FILEMANAGER_MAX_SEARCH_SCAN` | `100000` | Số mục tối đa quét trong một tìm kiếm |
 | `FILEMANAGER_MAX_BACKUP` | `33554432` | Kích thước backup JSON tối đa |
 | `FILEMANAGER_MIN_FREE_SPACE` | `67108864` | Dung lượng phải còn lại sau upload/giải nén |
 | `FILEMANAGER_SESSION_IDLE` | `1800` | Thời gian idle tối đa của phiên, đơn vị giây |
+
+Đặt `FILEMANAGER_MIN_FREE_SPACE=0` nếu muốn tắt phần dung lượng dự phòng. Không nên đặt quá cao trên thiết bị có phân vùng nhỏ; giá trị này vừa tạo cảnh báo trên trang dung lượng vừa chặn upload/giải nén có thể làm dung lượng trống giảm xuống dưới ngưỡng.
