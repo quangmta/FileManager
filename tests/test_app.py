@@ -1,8 +1,12 @@
 import io
+import json
 import os
 import tempfile
 import unittest
+import zipfile
+import time
 from pathlib import Path
+from unittest.mock import patch
 
 import app as fm
 
@@ -44,6 +48,7 @@ class FileManagerTest(unittest.TestCase):
     def test_reader_is_forbidden_from_mutating_and_audit(self):
         token = self.login('reader', 'strong-reader-password')
         self.assertEqual(self.post('/api/create', token, {'path': '', 'name': 'nope', 'type': 'file'}).status_code, 403)
+        self.assertEqual(self.post('/api/transfer', token, {'path': 'a', 'destination': '', 'operation': 'copy'}).status_code, 403)
         self.assertEqual(self.client.get('/api/audit').status_code, 403)
         self.assertFalse((self.root / 'nope').exists())
 
@@ -62,6 +67,122 @@ class FileManagerTest(unittest.TestCase):
         events = self.client.get('/api/audit')
         self.assertEqual(events.status_code, 200)
         self.assertTrue(any(e['action'] == 'delete' for e in events.json['events']))
+
+    def test_directory_download_is_zip_and_audited(self):
+        self.login()
+        folder = self.root / 'folder'
+        (folder / 'nested' / 'empty').mkdir(parents=True)
+        (folder / 'note.txt').write_text('hello zip', encoding='utf-8')
+        (folder / 'nested' / 'data.bin').write_bytes(b'\x00\x01archive')
+        response = self.client.get('/api/download?path=folder')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, 'application/zip')
+        self.assertIn('folder.zip', response.headers['Content-Disposition'])
+        with zipfile.ZipFile(io.BytesIO(response.data)) as archive:
+            self.assertEqual(archive.read('folder/note.txt'), b'hello zip')
+            self.assertEqual(archive.read('folder/nested/data.bin'), b'\x00\x01archive')
+            self.assertIn('folder/nested/empty/', archive.namelist())
+        response.close()
+        events = self.client.get('/api/audit').json['events']
+        self.assertTrue(any(e['action'] == 'download_directory' and e['path'] == 'folder' for e in events))
+
+    def test_directory_download_rejects_symlinks(self):
+        self.login()
+        folder = self.root / 'folder'
+        folder.mkdir()
+        outside = Path(self.temp.name) / 'outside.txt'
+        outside.write_text('secret', encoding='utf-8')
+        (folder / 'escape.txt').symlink_to(outside)
+        response = self.client.get('/api/download?path=folder')
+        self.assertEqual(response.status_code, 400)
+
+    def test_upload_zip_safely_extracts_nested_files(self):
+        token = self.login()
+        target = self.root / 'destination'
+        target.mkdir()
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, 'w', zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr('package/', '')
+            archive.writestr('package/sub/note.txt', 'archive data')
+        data.seek(0)
+        response = self.client.post('/api/upload-archive?path=destination',
+            data={'archive': (data, 'package.zip')}, headers={'X-CSRF-Token': token})
+        self.assertEqual(response.status_code, 200, response.json)
+        self.assertEqual((target / 'package' / 'sub' / 'note.txt').read_text(), 'archive data')
+        self.assertTrue(any(event['action']=='extract_archive' for event in self.client.get('/api/audit').json['events']))
+
+    def test_upload_zip_rejects_traversal_and_conflicts(self):
+        token=self.login();target=self.root/'destination';target.mkdir()
+        bad=io.BytesIO()
+        with zipfile.ZipFile(bad,'w') as archive:archive.writestr('../outside.txt','bad')
+        bad.seek(0)
+        response=self.client.post('/api/upload-archive?path=destination',data={'archive':(bad,'bad.zip')},headers={'X-CSRF-Token':token})
+        self.assertEqual(response.status_code,400)
+        self.assertFalse((self.root/'outside.txt').exists())
+        (target/'taken.txt').write_text('original')
+        conflict=io.BytesIO()
+        with zipfile.ZipFile(conflict,'w') as archive:archive.writestr('taken.txt','replace')
+        conflict.seek(0)
+        response=self.client.post('/api/upload-archive?path=destination',data={'archive':(conflict,'conflict.zip')},headers={'X-CSRF-Token':token})
+        self.assertEqual(response.status_code,409)
+        self.assertEqual((target/'taken.txt').read_text(),'original')
+
+    def test_search_and_capacity_filters(self):
+        self.login()
+        (self.root/'needle-alpha.txt').write_text('needle content')
+        (self.root/'beta.pdf').write_bytes(b'12345')
+        (self.root/'sub').mkdir();(self.root/'sub'/'needle.log').write_text('nested')
+        response=self.client.get('/api/search?q=needle&type=file&min_size=1')
+        self.assertEqual(response.status_code,200)
+        self.assertEqual({item['name'] for item in response.json['items']},{'needle-alpha.txt','needle.log'})
+        capacity=self.client.get('/api/capacity?path=')
+        self.assertEqual(capacity.status_code,200)
+        self.assertGreater(capacity.json['free'],0)
+        self.assertGreater(capacity.json['max_upload'],0)
+
+    def test_upload_is_rejected_when_destination_has_no_free_space(self):
+        token=self.login();(self.root/'destination').mkdir()
+        usage=os.statvfs(self.root)
+        exhausted=type('Usage',(),{'total':usage.f_blocks*usage.f_frsize,'used':0,'free':1})()
+        with patch('app.shutil.disk_usage',return_value=exhausted):
+            response=self.client.post('/api/upload?path=destination',data={'files':(io.BytesIO(b'data'),'tiny.txt')},headers={'X-CSRF-Token':token})
+        self.assertEqual(response.status_code,507)
+        self.assertFalse((self.root/'destination'/'tiny.txt').exists())
+
+    def test_idle_session_expiration_and_admin_revocation(self):
+        token=self.login()
+        with fm.dbconn() as db:db.execute('UPDATE sessions SET last_activity=?',(time.time()-fm.MAX_SESSION_IDLE-1,))
+        self.assertEqual(self.client.get('/api/list').status_code,401)
+        token=self.login()
+        second=self.app_client()
+        self.login_client(second,'reader','strong-reader-password')
+        sessions=self.client.get('/api/admin/sessions').json['sessions']
+        reader_session=next(item for item in sessions if item['username']=='reader')
+        response=self.client.post('/api/admin/sessions/revoke',json={'session_key':reader_session['session_key']},headers={'X-CSRF-Token':token})
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(second.get('/api/list').status_code,401)
+
+    def app_client(self):
+        return fm.app.test_client()
+
+    def login_client(self,client,username,password):
+        response=client.post('/api/login',json={'username':username,'password':password})
+        self.assertEqual(response.status_code,200)
+        return response.json['csrf']
+
+    def test_backup_export_and_restore(self):
+        token=self.login()
+        backup=self.client.get('/api/admin/backup')
+        self.assertEqual(backup.status_code,200)
+        payload=json.loads(backup.data)
+        self.assertEqual(payload['format'],'filescope-backup-v1')
+        self.post('/api/users',token,{'username':'temporary','password':'long-temporary-password','role':'read'})
+        form={'backup':(io.BytesIO(backup.data),'filescope-backup.json')}
+        restored=self.client.post('/api/admin/restore',data=form,headers={'X-CSRF-Token':token})
+        self.assertEqual(restored.status_code,200,restored.json)
+        usernames={user['username'] for user in self.client.get('/api/users').json['users']}
+        self.assertNotIn('temporary',usernames)
+        self.assertIn('admin',usernames)
 
     def test_path_traversal_and_symlink_are_rejected(self):
         self.login()
@@ -121,12 +242,49 @@ class FileManagerTest(unittest.TestCase):
         copied_dir = self.post('/api/transfer', token, {'path': 'folder', 'destination': 'target', 'operation': 'copy'})
         self.assertEqual(copied_dir.status_code, 200)
         self.assertEqual((self.root / 'target' / 'folder' / 'nested.txt').read_text(), 'nested')
+        outside = Path(self.temp.name) / 'outside.txt'
+        outside.write_text('do not follow links')
+        link = self.root / 'folder' / 'escape'
+        link.symlink_to(outside)
+        linked_copy = self.post('/api/transfer', token, {'path': 'folder', 'destination': 'target2', 'operation': 'copy'})
+        self.assertEqual(linked_copy.status_code, 400)
+        link.unlink()
         descendant = self.post('/api/transfer', token, {'path': 'folder', 'destination': 'folder/child', 'operation': 'cut'})
         self.assertEqual(descendant.status_code, 400)
         moved_dir = self.post('/api/transfer', token, {'path': 'folder', 'destination': 'target2', 'operation': 'cut'})
         self.assertEqual(moved_dir.status_code, 200)
         self.assertFalse((self.root / 'folder').exists())
         self.assertEqual((self.root / 'target2' / 'folder' / 'nested.txt').read_text(), 'nested')
+
+    def test_preview_text_pdf_image_and_reject_html_rendering(self):
+        self.login('reader', 'strong-reader-password')
+        (self.root / 'readme.txt').write_text('Preview works', encoding='utf-8')
+        (self.root / 'sample.pdf').write_bytes(b'%PDF-1.4\n%%EOF')
+        (self.root / 'sample.png').write_bytes(b'png-bytes')
+        (self.root / 'page.html').write_text('<script>alert(1)</script>', encoding='utf-8')
+        (self.root / 'archive.bin').write_bytes(b'binary')
+
+        text = self.client.get('/api/preview?path=readme.txt')
+        self.addCleanup(text.close)
+        self.assertEqual(text.status_code, 200)
+        self.assertIn('text/plain', text.content_type)
+        self.assertIn('inline', text.headers['Content-Disposition'])
+        self.assertEqual(text.data, b'Preview works')
+        pdf = self.client.get('/api/preview?path=sample.pdf')
+        self.addCleanup(pdf.close)
+        self.assertEqual(pdf.status_code, 200)
+        self.assertEqual(pdf.mimetype, 'application/pdf')
+        image = self.client.get('/api/preview?path=sample.png')
+        self.addCleanup(image.close)
+        self.assertEqual(image.status_code, 200)
+        self.assertEqual(image.mimetype, 'image/png')
+        unsafe = self.client.get('/api/preview?path=page.html')
+        self.addCleanup(unsafe.close)
+        self.assertEqual(unsafe.status_code, 200)
+        self.assertEqual(unsafe.mimetype, 'text/plain')
+        self.assertIn('nosniff', unsafe.headers['X-Content-Type-Options'])
+        unsupported = self.client.get('/api/preview?path=archive.bin')
+        self.assertEqual(unsupported.status_code, 415)
 
     def test_database_directory_is_not_browsable(self):
         fm.DB = self.root / '.filescope' / 'filemanager.sqlite3'

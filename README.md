@@ -5,10 +5,15 @@
 ## Chức năng
 
 - Duyệt cây thư mục và danh sách tệp; xem kích thước, quyền Unix, thời gian sửa đổi.
+- Xem trực tiếp văn bản, mã nguồn, JSON/CSV, PDF và ảnh phổ biến trong tab trình duyệt mới; HTML được hiển thị dưới dạng văn bản thuần.
 - Tải nhiều tệp lên, tải tệp xuống; tạo, đổi tên, xóa tệp/thư mục và `chmod`.
+- Tải thư mục xuống dạng ZIP; tải ZIP lên và giải nén an toàn trong thư mục đang mở, có giới hạn số mục/kích thước, chống path traversal và xung đột tên.
+- Tìm kiếm đệ quy theo tên, loại, dung lượng và ngày sửa đổi; kết quả tối đa 1.000 mục.
+- Tiến độ/hủy tải lên; kiểm tra dung lượng trống trước khi ghi và cảnh báo phân vùng gần mức dự phòng.
 - Thống kê dung lượng đã dùng/còn trống trên các phân vùng gắn kết.
 - Tài khoản `read` (chỉ xem/tải), `write` (thêm/sửa/xóa/chmod), `admin` (toàn quyền và quản lý người dùng/nhật ký).
 - Nhật ký đăng nhập/thất bại, tải lên, CRUD, chmod và quản lý tài khoản; lưu SQLite, hiển thị 500 sự kiện gần nhất.
+- Phiên được thu hồi phía máy chủ khi hết hạn không hoạt động; admin xem/thu hồi phiên khác và tải/khôi phục bản sao lưu tài khoản + nhật ký.
 - HTTP để chạy thử trong mạng tin cậy; HTTPS bằng TLS trực tiếp hoặc reverse proxy Nginx.
 
 ## Cài đặt nhanh trên Ubuntu
@@ -106,12 +111,27 @@ WantedBy=multi-user.target
 ## Sử dụng
 
 1. Mở địa chỉ HTTPS, đăng nhập bằng tài khoản admin đã tạo.
-2. Chọn thư mục từ cây bên trái hoặc breadcrumb. Dùng nút ←/→ phía trên để quay lại/tiến tới lịch sử thư mục. Tệp có thể tải xuống; thư mục mở khi bấm tên.
-3. Dùng các nút trên trang để tải lên, tạo thư mục/tệp. Menu từng dòng cho phép đổi tên, quyền dạng bát phân (ví dụ `640`) hoặc xóa.
-4. Admin vào **Quản trị** để tạo tài khoản với vai trò `read`, `write`, hoặc `admin`, và xem nhật ký thao tác.
-5. Vào **Dung lượng ổ đĩa** để xem phân vùng, phần trăm dùng, dung lượng còn trống.
+2. Chọn thư mục từ cây bên trái hoặc breadcrumb. Dùng nút ←/→ phía trên để quay lại/tiến tới lịch sử thư mục. Bấm tên tệp hoặc biểu tượng xem trước để mở định dạng hỗ trợ trong tab mới; dùng biểu tượng tải xuống cho tệp cần lưu về máy. Thư mục mở khi bấm tên.
+3. Dùng các nút trên trang để tải lên, tạo thư mục/tệp. Các nút ở từng dòng hỗ trợ Copy, Cut, đổi tên, đổi quyền dạng bát phân (ví dụ `640`) và xóa. Chọn **Paste here** sau khi mở thư mục đích; Copy có thể dán nhiều lần, Cut sẽ được xóa khỏi clipboard sau khi dán thành công.
+4. Nút **ZIP** tải tệp `.zip` lên rồi giải nén vào thư mục đang mở. Tệp có đường dẫn bất hợp lệ, symbolic link, nội dung vượt giới hạn hoặc trùng tên sẽ bị từ chối; các mục không bị ghi đè.
+5. Dùng biểu mẫu **Tìm trong thư mục này và thư mục con** để lọc theo tên, loại, KB và ngày. Tìm kiếm trả tối đa 1.000 mục.
+6. Tải lên hiển thị tiến độ; nút **Hủy** ngắt yêu cầu. Trình duyệt dùng trình tải riêng để hiển thị tiến độ tải xuống và hỗ trợ hủy tải. Upload/giải nén bị chặn nếu không đủ dung lượng trống hoặc sẽ phá mức dự phòng cấu hình.
+7. Admin vào **Quản trị** để tạo tài khoản với vai trò `read`, `write`, hoặc `admin`, xem nhật ký/phiên, thu hồi phiên khác, tải bản sao lưu hoặc khôi phục tài khoản + nhật ký. Khôi phục thay thế danh sách tài khoản và audit, giữ phiên admin hiện tại nếu tài khoản đó có trong backup; không bao gồm dữ liệu file, secret hay biến môi trường.
+8. Vào **Dung lượng ổ đĩa** để xem phân vùng, phần trăm dùng, dung lượng còn trống.
+
+Trong danh sách tệp, nhấn tiêu đề cột để sắp xếp tăng dần; nhấn lại để đảo chiều. Nút ▾ cạnh tiêu đề mở bộ lọc theo tên, kích thước, quyền hoặc thời gian sửa đổi. Kéo vạch ⋮ giữa các tiêu đề để thay đổi độ rộng; các cột kế tiếp dịch theo và bảng có thanh cuộn ngang khi vượt vùng xem. Tên quá dài được rút gọn trong ô; độ rộng cột đã chỉnh sẽ được lưu trong trình duyệt.
 
 `FILEMANAGER_ROOT` là ranh giới bảo mật ứng dụng. Đường dẫn `..`, đường dẫn tuyệt đối và symbolic link bị từ chối; thư mục dữ liệu ứng dụng không được liệt kê. Tệp hệ thống vẫn chịu kiểm soát quyền Unix của user chạy dịch vụ. Không cấu hình root là `/` nếu không thực sự cần thiết.
+
+### Kiểm tra runtime QNX/KR260
+
+`tools/check_qnx_runtime.py` kiểm tra phiên bản Python, Flask/Werkzeug, SQLite, TLS, ZIP Deflate/zlib, thao tác filesystem và vùng tạm có thể ghi. Chạy nó trên chính image QNX mục tiêu:
+
+```sh
+python3 tools/check_qnx_runtime.py
+```
+
+Mọi kiểm tra đạt chỉ xác nhận các API/runtime được import và thao tác cơ bản. Vẫn cần build/chạy thử Flask và ứng dụng trên BSP QNX KR260 thực tế, xác nhận network/TLS, quyền filesystem và cơ chế khởi động dịch vụ của image. QNX không dùng mẫu triển khai systemd Linux ở trên.
 
 ## Kiểm tra
 
@@ -135,6 +155,14 @@ Các trường hợp kiểm tra chấp nhận thủ công:
 | TC-08 | Xem trang dung lượng | Các mount có tổng/đã dùng/còn trống nhất quán với `df -h` |
 | TC-09 | Admin tạo user, xem audit; user thường gọi `/api/audit` | Admin thành công; user thường nhận HTTP 403 |
 | TC-10 | Dùng HTTPS qua proxy/chứng chỉ hợp lệ | Trình duyệt hiển thị kết nối TLS; cookie phiên có cờ Secure |
+| TC-11 | Mở `.txt`, `.pdf`, ảnh và `.html` từ danh sách | Văn bản/PDF/ảnh hiển thị inline; HTML hiện như văn bản thuần, không chạy script |
+| TC-12 | Tải ZIP hợp lệ có thư mục lồng nhau và thư mục rỗng | Giải nén đúng nội dung vào thư mục đang mở |
+| TC-13 | ZIP chứa `../`, symlink, archive bomb hoặc tên trùng | Bị từ chối, không ghi đè và không tạo tệp ngoài đích |
+| TC-14 | Tìm theo tên/loại/dung lượng/ngày sửa đổi | Chỉ hiển thị mục phù hợp; kết quả lớn được đánh dấu giới hạn |
+| TC-15 | Tải nhiều tệp, hủy giữa chừng, ổ còn ít dung lượng | Có tiến độ; hủy request; upload bị chặn nếu không đủ dung lượng/mức dự phòng |
+| TC-16 | Không hoạt động quá `FILEMANAGER_SESSION_IDLE`; admin thu hồi phiên | API hết hạn trả HTTP 401; phiên bị thu hồi phải đăng nhập lại |
+| TC-17 | Tải backup rồi khôi phục JSON hợp lệ/không hợp lệ | Backup chỉ có tài khoản + audit; JSON sai bị từ chối; restore có xác nhận và audit event |
+| TC-18 | Chạy `tools/check_qnx_runtime.py` trên image KR260/QNX | Báo rõ runtime/module/filesystem còn thiếu; không thay thế kiểm thử BSP thực tế |
 
 ## Cấu hình
 
@@ -145,3 +173,9 @@ Các trường hợp kiểm tra chấp nhận thủ công:
 | `FILEMANAGER_SECRET` | không đặt | Bắt buộc chạy server; chuỗi ngẫu nhiên bí mật |
 | `FILEMANAGER_HTTPS` | `0` | Đặt `1` khi trình duyệt luôn dùng HTTPS |
 | `FILEMANAGER_MAX_UPLOAD` | `1073741824` | Kích thước tải lên tối đa theo byte |
+| `FILEMANAGER_MAX_EXTRACTED` | `2147483648` | Tổng byte giải nén hoặc đóng gói thư mục tối đa |
+| `FILEMANAGER_MAX_ARCHIVE_ENTRIES` | `10000` | Số tệp tối đa trong archive |
+| `FILEMANAGER_MAX_SEARCH_SCAN` | `100000` | Số mục tối đa quét trong một tìm kiếm |
+| `FILEMANAGER_MAX_BACKUP` | `33554432` | Kích thước backup JSON tối đa |
+| `FILEMANAGER_MIN_FREE_SPACE` | `67108864` | Dung lượng phải còn lại sau upload/giải nén |
+| `FILEMANAGER_SESSION_IDLE` | `1800` | Thời gian idle tối đa của phiên, đơn vị giây |
