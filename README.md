@@ -12,6 +12,7 @@
 - Tìm kiếm đệ quy theo tên, loại, dung lượng và ngày sửa đổi; kết quả tối đa 1.000 mục.
 - Tiến độ, tốc độ và nút hủy khi tải lên; trình duyệt quản lý tiến độ/hủy tải xuống. Kiểm tra dung lượng trống trước khi ghi và cảnh báo phân vùng gần mức dự phòng.
 - Thống kê dung lượng đã dùng/còn trống trên các phân vùng gắn kết.
+- Trang **Bản đồ & nhật ký** chỉ đọc tile DTED `.dt2` và log CSV/JSON/JSONL/text; vẽ cao độ offline, phủ tọa độ đã ghi, phát lại theo thứ tự, tra ô lưới gần nhất và so sánh cao độ log với bản đồ.
 - Tài khoản `read` (chỉ xem/tải), `write` (thêm/sửa/xóa/chmod), `admin` (toàn quyền và quản lý người dùng/nhật ký).
 - Nhật ký đăng nhập/thất bại, tải lên, CRUD, chmod và quản lý tài khoản; lưu SQLite, hiển thị 500 sự kiện gần nhất.
 - Phiên được thu hồi phía máy chủ khi hết hạn không hoạt động; admin xem/thu hồi phiên khác và tải/khôi phục bản sao lưu tài khoản + nhật ký.
@@ -124,6 +125,14 @@ WantedBy=multi-user.target
 
 Tùy chọn độ rộng cột được lưu trong trình duyệt đang dùng. Copy/Cut clipboard cũng chỉ nằm trong giao diện trình duyệt hiện tại.
 
+### Bản đồ và log (chỉ đọc)
+
+Vào **Bản đồ & nhật ký**, chọn tile `.dt2` và tệp log. Trình đọc bản đồ hiện hỗ trợ định dạng chuẩn DTED UHL/Data Record; phần mở rộng `.dt2` tự nó chưa đủ xác nhận định dạng. Bản đồ được tô màu theo mẫu cao độ và có trục latitude/longitude. Bấm lên bản đồ để tra độ cao của ô lưới gần nhất; chọn dòng log để đối chiếu tọa độ/cao độ ghi nhận với tile đang mở. Thanh thời gian và **Phát lại** duyệt các dòng log theo thứ tự file; bộ lọc hỗ trợ từ khóa/ngày và **Xuất CSV** tải các bản ghi đang lọc.
+
+Log có thể là CSV, JSON array/object, JSON Lines, hoặc văn bản từng dòng. Trình đọc nhận các tên trường phổ biến như `latitude`/`lat`, `longitude`/`lon`/`lng`, `altitude`/`elevation`/`height` và `timestamp`/`time`; trường tọa độ trong object con `position`, `coordinates` hoặc `location` cũng được nhận. Dòng không có tọa độ vẫn xuất hiện trong bảng nhưng không được vẽ trên bản đồ. File log bị giới hạn 5.000 bản ghi trả về và tối đa `FILEMANAGER_MAX_GEO_FILE` byte.
+
+Các màn hình này chỉ đọc dữ liệu đã có và không gửi lệnh hoặc thay đổi giao tiếp/core R. Đặt `FILEMANAGER_GEO_ROOT` vào thư mục bản đồ/log bên trong `FILEMANAGER_ROOT` nếu không muốn quét toàn bộ vùng quản lý. Project hiện không kèm tile `.dt2` hay log mẫu; tile custom không theo DTED sẽ được liệt kê kèm lỗi định dạng cho đến khi có đặc tả parser tương ứng.
+
 `FILEMANAGER_ROOT` là ranh giới bảo mật ứng dụng. Đường dẫn `..`, đường dẫn tuyệt đối và symbolic link bị từ chối; thư mục dữ liệu ứng dụng không được liệt kê. Tệp hệ thống vẫn chịu kiểm soát quyền Unix của user chạy dịch vụ. Không cấu hình root là `/` nếu không thực sự cần thiết.
 
 ### Triển khai trên QNX/KR260
@@ -186,7 +195,7 @@ Truy cập `https://<IP-hoac-hostname-KR260>:8443`; trình duyệt cần tin c�
 
 #### 4. Thử nghiệm trên target
 
-Thực hiện các ca TC-01 đến TC-21 bên dưới với dữ liệu thử, đặc biệt TC-04/05/06/08/10/12/13/18. Xác nhận các phân vùng trong `FILEMANAGER_MOUNTS` đúng với mount thật, upload lớn không làm đầy RAM, database vẫn tồn tại sau reboot, quyền file đúng với filesystem đang dùng, và truy cập HTTPS được từ máy khách. Kết quả trên Linux chỉ kiểm chứng chức năng chung; chỉ ghi nhận tương thích QNX sau khi các ca này chạy đạt trên chính board/image.
+Thực hiện các ca TC-01 đến TC-27 bên dưới với dữ liệu thử, đặc biệt TC-04/05/06/08/10/12/13/18/26/27. Xác nhận các phân vùng trong `FILEMANAGER_MOUNTS` đúng với mount thật, upload lớn không làm đầy RAM, database vẫn tồn tại sau reboot, quyền file đúng với filesystem đang dùng, và truy cập HTTPS được từ máy khách. Kết quả trên Linux chỉ kiểm chứng chức năng chung; chỉ ghi nhận tương thích QNX sau khi các ca này chạy đạt trên chính board/image.
 
 ## Kiểm tra
 
@@ -225,6 +234,8 @@ Các trường hợp kiểm tra chấp nhận thủ công:
 | TC-23 | Sửa tệp nhị phân/định dạng không hỗ trợ, quá giới hạn hoặc đã đổi từ nơi khác | Bị từ chối; vượt giới hạn trả HTTP 413; revision cũ trả HTTP 409 và không ghi đè nội dung mới hơn |
 | TC-24 | Thêm nhiều dòng đến cuối vùng nhìn, sau đó Undo/Redo bằng nút và phím tắt | Editor tự cuộn theo caret; undo/redo khôi phục chính xác nội dung và vị trí chọn |
 | TC-25 | Đổi quyền bằng các danh sách chọn và bằng ô số bát phân | Các lựa chọn cập nhật đúng ba chữ số; nhập số cập nhật lại các danh sách; quyền tệp khớp giá trị đã chọn |
+| TC-26 | Mở tile DTED `.dt2`, bấm lấy độ cao và chọn điểm tọa độ từ log | Phạm vi/độ phân giải hiển thị; NoData được nhận diện; tọa độ log trong tile được phủ và chênh cao tính đúng |
+| TC-27 | Đọc CSV/JSON/JSONL/log, lọc ngày/từ khóa, phát lại và xuất CSV | Trường tọa độ/thời gian phổ biến được chuẩn hóa; giới hạn 5.000 bản ghi được báo; không ghi file hoặc gửi lệnh tới core R |
 
 ## Cấu hình
 
@@ -240,6 +251,8 @@ Các trường hợp kiểm tra chấp nhận thủ công:
 | `FILEMANAGER_MAX_SEARCH_SCAN` | `100000` | Số mục tối đa quét trong một tìm kiếm |
 | `FILEMANAGER_MAX_BACKUP` | `33554432` | Kích thước backup JSON tối đa |
 | `FILEMANAGER_MAX_EDIT_BYTES` | `4194304` | Kích thước tối đa mỗi tệp đọc/lưu trong editor văn bản |
+| `FILEMANAGER_GEO_ROOT` | `FILEMANAGER_ROOT` | Thư mục tìm `.dt2` và log, bắt buộc nằm trong root quản lý |
+| `FILEMANAGER_MAX_GEO_FILE` | `33554432` | Kích thước tối đa của một tile/log dùng trong trang bản đồ và nhật ký |
 | `FILEMANAGER_MIN_FREE_SPACE` | `67108864` | Dung lượng phải còn lại sau upload/giải nén |
 | `FILEMANAGER_SESSION_IDLE` | `1800` | Thời gian idle tối đa của phiên, đơn vị giây |
 | `FILEMANAGER_MOUNTS` | tự dò trên Linux; QNX chỉ dùng root | Danh sách mount points phân cách bằng `:` (QNX nên đặt tường minh) |

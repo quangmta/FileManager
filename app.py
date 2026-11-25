@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """Root-confined Linux web file manager."""
-import argparse, hashlib, io, json, os, re, secrets, shutil, sqlite3, stat, tempfile, time, zipfile, zlib, platform
+import argparse, csv, hashlib, io, json, os, re, secrets, shutil, sqlite3, stat, tempfile, time, zipfile, zlib, platform
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path, PurePosixPath
 from flask import Flask, abort, jsonify, request, send_file, session
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.exceptions import HTTPException
+from geodata import GeoDataError, dted_elevation, dted_header, dted_preview, parse_log
 
 BASE=Path(__file__).resolve().parent
 DB=Path(os.environ.get('FILEMANAGER_DB',BASE/'.filescope/filemanager.sqlite3'))
 ROOT=Path(os.environ.get('FILEMANAGER_ROOT',BASE)).expanduser().resolve()
+_geo_root_setting=Path(os.environ.get('FILEMANAGER_GEO_ROOT',str(ROOT))).expanduser()
+GEO_ROOT=(_geo_root_setting if _geo_root_setting.is_absolute() else ROOT/_geo_root_setting).resolve()
+try:GEO_ROOT.relative_to(ROOT)
+except ValueError:raise RuntimeError('FILEMANAGER_GEO_ROOT phải nằm bên trong FILEMANAGER_ROOT')
 MAX_UPLOAD=int(os.environ.get('FILEMANAGER_MAX_UPLOAD',str(1024**3)))
 MAX_EXTRACTED=int(os.environ.get('FILEMANAGER_MAX_EXTRACTED',str(2*1024**3)))
 MAX_ARCHIVE_ENTRIES=int(os.environ.get('FILEMANAGER_MAX_ARCHIVE_ENTRIES','10000'))
@@ -19,6 +24,7 @@ MAX_SESSION_IDLE=int(os.environ.get('FILEMANAGER_SESSION_IDLE','1800'))
 MAX_BACKUP=int(os.environ.get('FILEMANAGER_MAX_BACKUP',str(32*1024**2)))
 MAX_EDIT_BYTES=int(os.environ.get('FILEMANAGER_MAX_EDIT_BYTES',str(4*1024**2)))
 MIN_FREE_SPACE=int(os.environ.get('FILEMANAGER_MIN_FREE_SPACE',str(64*1024**2)))
+MAX_GEO_FILE_BYTES=int(os.environ.get('FILEMANAGER_MAX_GEO_FILE',str(32*1024**2)))
 TEMP_DIR=os.environ.get('FILEMANAGER_TMP') or None
 if TEMP_DIR:
     TEMP_DIR=str(Path(TEMP_DIR).expanduser().resolve())
@@ -212,6 +218,86 @@ def tree():
         except OSError:return []
         return [{'name':x.name,'path':rel(x),'children':walk(x,n+1)} for x in children[:500]]
     return jsonify(root=str(ROOT),children=walk(ROOT))
+def geo_file(relpath, extensions):
+    path=resolve(relpath)
+    try:path.relative_to(GEO_ROOT)
+    except ValueError:abort(400,'Đường dẫn bản đồ/log nằm ngoài FILEMANAGER_GEO_ROOT')
+    if not path.is_file() or path.suffix.casefold() not in extensions:abort(400,'Loại tệp bản đồ/log không được hỗ trợ')
+    if path.stat().st_size>MAX_GEO_FILE_BYTES:abort(413,f'Tệp vượt giới hạn đọc {MAX_GEO_FILE_BYTES} byte')
+    return path
+
+def geo_candidates(extensions, limit):
+    found=[];scanned=0;db_dir=DB.parent.resolve()
+    def onerror(_):return None
+    for current_dir,dirs,files in os.walk(GEO_ROOT,topdown=True,followlinks=False,onerror=onerror):
+        here=Path(current_dir)
+        dirs[:]=sorted(name for name in dirs if name not in ('.git','.venv','__pycache__','.filescope') and not (here/name).is_symlink() and (here/name).resolve()!=db_dir)
+        for name in sorted(files,key=str.casefold):
+            scanned+=1
+            if scanned>100000:return found,True
+            path=here/name
+            if path.is_symlink() or path.suffix.casefold() not in extensions:continue
+            try:path.resolve().relative_to(GEO_ROOT)
+            except ValueError:continue
+            found.append(path)
+            if len(found)>=limit:return found,True
+    return found,False
+
+@app.get('/api/geo/maps')
+@require()
+def geo_maps():
+    paths,truncated=geo_candidates({'.dt2'},500)
+    maps=[]
+    for path in paths:
+        entry={'path':rel(path),'name':path.name,'size':path.stat().st_size,'modified':path.stat().st_mtime}
+        try:
+            header=dted_header(path,MAX_GEO_FILE_BYTES)
+            entry.update(format='DTED',columns=header['columns'],rows=header['rows'],min_latitude=header['min_latitude'],max_latitude=header['max_latitude'],min_longitude=header['min_longitude'],max_longitude=header['max_longitude'],latitude_interval_seconds=header['latitude_interval_seconds'],longitude_interval_seconds=header['longitude_interval_seconds'])
+        except (GeoDataError,OSError) as error:entry['error']=str(error)
+        maps.append(entry)
+    maps.sort(key=lambda entry:entry['path'].casefold())
+    return jsonify(maps=maps,truncated=truncated)
+
+@app.get('/api/geo/map-preview')
+@require()
+def geo_map_preview():
+    path=geo_file(request.args.get('path',''),{'.dt2'})
+    try:data=dted_preview(path,MAX_GEO_FILE_BYTES)
+    except GeoDataError as error:abort(415,str(error))
+    except OSError as error:abort(400,f'Không đọc được tile DTED: {error.strerror or error}')
+    audit('geo_map_view',rel(path))
+    return jsonify(map=data)
+
+@app.get('/api/geo/elevation')
+@require()
+def geo_elevation():
+    path=geo_file(request.args.get('path',''),{'.dt2'})
+    try:latitude=float(request.args.get('latitude',''));longitude=float(request.args.get('longitude',''))
+    except ValueError:abort(400,'Latitude/longitude không hợp lệ')
+    try:result=dted_elevation(path,latitude,longitude,MAX_GEO_FILE_BYTES)
+    except GeoDataError as error:abort(400,str(error))
+    except OSError as error:abort(400,f'Không đọc được độ cao: {error.strerror or error}')
+    return jsonify(result)
+
+GEO_LOG_EXTENSIONS={'.csv','.json','.jsonl','.log','.txt'}
+@app.get('/api/geo/log-files')
+@require()
+def geo_log_files():
+    paths,truncated=geo_candidates(GEO_LOG_EXTENSIONS,1000)
+    files=[{'path':rel(path),'name':path.name,'size':path.stat().st_size,'modified':path.stat().st_mtime} for path in paths]
+    files.sort(key=lambda entry:entry['path'].casefold())
+    return jsonify(files=files,truncated=truncated)
+
+@app.get('/api/geo/logs')
+@require()
+def geo_logs():
+    path=geo_file(request.args.get('path',''),GEO_LOG_EXTENSIONS)
+    try:result=parse_log(path,MAX_GEO_FILE_BYTES)
+    except GeoDataError as error:abort(413,str(error))
+    except (OSError,csv.Error) as error:abort(400,f'Không đọc được log: {error}')
+    audit('geo_log_view',rel(path),f"records={result['total_records']}")
+    return jsonify(path=rel(path),name=path.name,**result)
+
 @app.get('/api/disk')
 @require()
 def disk():
