@@ -6,6 +6,7 @@
 
 - Duyệt cây thư mục và danh sách tệp; xem kích thước, quyền Unix, thời gian sửa đổi.
 - Xem trực tiếp văn bản, mã nguồn, JSON/CSV, PDF và ảnh phổ biến trong tab trình duyệt mới; HTML được hiển thị dưới dạng văn bản thuần.
+- Sửa trực tiếp tệp UTF-8 với số dòng và tô màu cú pháp cơ bản cho Python, JavaScript, JSON, HTML/XML, CSS, Shell, SQL, YAML và Markdown; chỉ role `write`/`admin`, có giới hạn kích thước và phát hiện thay đổi đồng thời.
 - Tải nhiều tệp lên, tải tệp xuống; tạo, đổi tên, xóa tệp/thư mục và `chmod`.
 - Tải thư mục xuống dạng ZIP; tải ZIP lên và giải nén an toàn trong thư mục đang mở, có giới hạn số mục/kích thước, chống path traversal và xung đột tên.
 - Tìm kiếm đệ quy theo tên, loại, dung lượng và ngày sửa đổi; kết quả tối đa 1.000 mục.
@@ -112,7 +113,7 @@ WantedBy=multi-user.target
 
 1. Mở địa chỉ HTTPS, đăng nhập bằng tài khoản admin đã tạo.
 2. Chọn thư mục từ cây bên trái hoặc breadcrumb. Dùng nút ←/→ phía trên để quay lại/tiến tới lịch sử thư mục. Bấm tên tệp hoặc biểu tượng xem trước để mở định dạng hỗ trợ trong tab mới; dùng biểu tượng tải xuống cho tệp cần lưu về máy. Thư mục mở khi bấm tên.
-3. Dùng các nút trên trang để tải lên, tạo thư mục/tệp. Các nút ở từng dòng hỗ trợ Copy, Cut, đổi tên, đổi quyền dạng bát phân (ví dụ `640`) và xóa. Chọn **Paste here** sau khi mở thư mục đích; Copy có thể dán nhiều lần, Cut sẽ được xóa khỏi clipboard sau khi dán thành công.
+3. Dùng các nút trên trang để tải lên, tạo thư mục/tệp. Các nút ở từng dòng hỗ trợ Copy, Cut, đổi tên, đổi quyền bằng danh sách chọn cho Chủ sở hữu/Nhóm/Người khác hoặc nhập quyền bát phân (ví dụ `640`), xóa và **Sửa nội dung** cho tệp văn bản UTF-8. Editor có số dòng và tô màu cú pháp cơ bản; phím Tab chèn 4 dấu cách. Có nút **Hoàn tác/Làm lại** và phím tắt Ctrl+Z/Ctrl+Y (⌘+Z/⌘+Y trên macOS); con trỏ tự cuộn theo dòng đang sửa. Enter xuống dòng, **Ctrl+Enter** (hoặc **⌘+Enter** trên macOS) lưu; nút **Xác nhận** cũng lưu. Lưu bị từ chối nếu file đã thay đổi từ nơi khác sau khi mở; mở lại editor để lấy nội dung mới. Chỉ role `write` và `admin` thấy nút sửa. Chọn **Paste here** sau khi mở thư mục đích; Copy có thể dán nhiều lần, Cut sẽ được xóa khỏi clipboard sau khi dán thành công.
 4. Nút **ZIP** tải tệp `.zip` lên rồi giải nén vào thư mục đang mở. Hệ thống không cho ZIP ghi đè mục đã có; ZIP lỗi, có đường dẫn tuyệt đối/`..`, symbolic link, tỷ lệ nén bất thường hoặc vượt giới hạn sẽ bị từ chối. Tệp ZIP tải lên chịu `FILEMANAGER_MAX_UPLOAD`; tổng dữ liệu giải nén và số mục chịu `FILEMANAGER_MAX_EXTRACTED`/`FILEMANAGER_MAX_ARCHIVE_ENTRIES`.
 5. Dùng biểu mẫu **Tìm trong thư mục này và thư mục con** để tìm theo tên và lọc theo loại, dung lượng KB hoặc ngày sửa đổi. Ngày mở trong popover nổi; nhấn lại tiêu đề hoặc bấm bên ngoài để thu gọn. Khoảng ngày đã chọn vẫn hiện trên tiêu đề. Kết quả tối đa 1.000 mục và hệ thống quét tối đa `FILEMANAGER_MAX_SEARCH_SCAN` mục.
 6. Trong bảng, nhấn tiêu đề cột để sắp xếp; nhấn lại để đảo chiều. Nút ▾ cạnh tiêu đề mở bộ lọc theo tên, kích thước, quyền hoặc ngày. Kéo vạch ⋮ để đổi rộng cột; bảng hiện thanh cuộn ngang nếu vượt vùng xem. Tên dài được rút gọn trong ô.
@@ -154,11 +155,11 @@ Checker cần kết thúc mã 0. Nó kiểm tra module, SQLite, ZIP Deflate, TLS
 Ví dụ dưới đây giả định phân vùng dữ liệu được mount tại `/fs/data`; thay bằng mount point thực tế của image. Không dùng vùng dữ liệu tạm trong RAM để lưu database hoặc file người dùng. Cấp quyền tối thiểu cho user dịch vụ, và bảo đảm filesystem hỗ trợ các thao tác POSIX cần dùng như `chmod`, rename nguyên tử (`os.replace`) và SQLite locking.
 
 ```sh
-mkdir -p /fs/data/filescope/root /fs/data/filescope/state /fs/data/filescope/tmp
-export FILEMANAGER_ROOT=/fs/data/filescope/root
-export FILEMANAGER_DB=/fs/data/filescope/state/filemanager.sqlite3
-export FILEMANAGER_TMP=/fs/data/filescope/tmp
-export FILEMANAGER_MOUNTS=/,/fs/data
+mkdir -p filescope/root filescope/state filescope/tmp
+export FILEMANAGER_ROOT=filescope/root
+export FILEMANAGER_DB=filescope/state/filemanager.sqlite3
+export FILEMANAGER_TMP=filescope/tmp
+export FILEMANAGER_MOUNTS=/
 export FILEMANAGER_MIN_FREE_SPACE=67108864
 export FILEMANAGER_SECRET='THAY_BANG_CHUOI_NGAU_NHIEN_DAI'
 ```
@@ -220,6 +221,10 @@ Các trường hợp kiểm tra chấp nhận thủ công:
 | TC-19 | Mở/thu gọn bộ chọn ngày trong biểu mẫu tìm kiếm | Bộ chọn nổi, không làm thay đổi chiều cao thanh; khoảng ngày vẫn hiện sau khi thu gọn; click ngoài đóng popover |
 | TC-20 | Sắp xếp và lọc cột trong lúc đang xem kết quả tìm kiếm | Sắp xếp/lọc áp dụng lên kết quả hiện tại; Xóa tìm kiếm trở lại danh sách thư mục |
 | TC-21 | Mở form có trường bắt buộc rồi nhấn **Hủy** hoặc **×** khi để trống | Modal đóng ngay, không hiện thông báo validation; nhấn **Xác nhận** vẫn kiểm tra trường bắt buộc |
+| TC-22 | Role `write`/`admin` sửa tệp `.txt`, lưu rồi mở lại | Nội dung UTF-8 lưu đúng; audit ghi nhận `edit_save`; role `read` bị HTTP 403 khi gọi API ghi |
+| TC-23 | Sửa tệp nhị phân/định dạng không hỗ trợ, quá giới hạn hoặc đã đổi từ nơi khác | Bị từ chối; vượt giới hạn trả HTTP 413; revision cũ trả HTTP 409 và không ghi đè nội dung mới hơn |
+| TC-24 | Thêm nhiều dòng đến cuối vùng nhìn, sau đó Undo/Redo bằng nút và phím tắt | Editor tự cuộn theo caret; undo/redo khôi phục chính xác nội dung và vị trí chọn |
+| TC-25 | Đổi quyền bằng các danh sách chọn và bằng ô số bát phân | Các lựa chọn cập nhật đúng ba chữ số; nhập số cập nhật lại các danh sách; quyền tệp khớp giá trị đã chọn |
 
 ## Cấu hình
 
@@ -234,6 +239,7 @@ Các trường hợp kiểm tra chấp nhận thủ công:
 | `FILEMANAGER_MAX_ARCHIVE_ENTRIES` | `10000` | Số mục tối đa trong archive |
 | `FILEMANAGER_MAX_SEARCH_SCAN` | `100000` | Số mục tối đa quét trong một tìm kiếm |
 | `FILEMANAGER_MAX_BACKUP` | `33554432` | Kích thước backup JSON tối đa |
+| `FILEMANAGER_MAX_EDIT_BYTES` | `4194304` | Kích thước tối đa mỗi tệp đọc/lưu trong editor văn bản |
 | `FILEMANAGER_MIN_FREE_SPACE` | `67108864` | Dung lượng phải còn lại sau upload/giải nén |
 | `FILEMANAGER_SESSION_IDLE` | `1800` | Thời gian idle tối đa của phiên, đơn vị giây |
 | `FILEMANAGER_MOUNTS` | tự dò trên Linux; QNX chỉ dùng root | Danh sách mount points phân cách bằng `:` (QNX nên đặt tường minh) |

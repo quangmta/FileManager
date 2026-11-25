@@ -9,6 +9,7 @@ const activeFilters = { name: 'all', size: 'all', mode: 'all', modified: 'all', 
 let searchMode = false, searchTruncated = false;
 let activeTransfer = null, idleTimeout = 1800, maxUploadClient = 1024**3, idleTimer = null, lastHeartbeat = 0;
 const previewExtensions = new Set(['txt','log','md','csv','json','xml','yaml','yml','toml','ini','conf','py','js','css','sh','sql','html','htm','rtf','pdf','png','jpg','jpeg','gif','webp','bmp','avif']);
+const editableTextExtensions = new Set(['txt','log','md','csv','json','xml','yaml','yml','toml','ini','conf','py','js','css','sh','sql','html','htm','rtf']);
 const expandedNodes = new Set();
 
 async function api(url, opts = {}) {
@@ -31,6 +32,190 @@ const esc = value => String(value).replace(/[&<>"']/g, ch => ({
 const size = bytes => bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${(bytes / 1024).toFixed(1)} KB` : bytes < 1073741824 ? `${(bytes / 1048576).toFixed(1)} MB` : `${(bytes / 1073741824).toFixed(2)} GB`;
 const roleName = role => ({ admin: 'Quản trị viên', write: 'Đọc & ghi', read: 'Chỉ đọc' })[role] || role;
 const canPreview = name => previewExtensions.has(name.split('.').pop().toLowerCase());
+const canEditText = name => editableTextExtensions.has(name.split('.').pop().toLowerCase());
+
+const editorLanguages = {
+  py: ['Python', 'python'], js: ['JavaScript', 'javascript'], json: ['JSON', 'json'],
+  html: ['HTML', 'html'], htm: ['HTML', 'html'], css: ['CSS', 'css'],
+  sh: ['Shell', 'shell'], sql: ['SQL', 'sql'], yaml: ['YAML', 'yaml'], yml: ['YAML', 'yaml'],
+  md: ['Markdown', 'markdown'], txt: ['Văn bản', 'plain'], log: ['Log', 'plain'],
+  csv: ['CSV', 'plain'], xml: ['XML', 'html'], toml: ['TOML', 'python'], ini: ['INI', 'python'],
+  conf: ['Config', 'python'], rtf: ['RTF', 'plain']
+};
+const editorKeywords = {
+  python: new Set('and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield self False None True'.split(' ')),
+  javascript: new Set('async await break case catch class const continue debugger default delete do else export extends finally for from function if import in instanceof let new return static super switch this throw try typeof var void while with yield true false null undefined'.split(' ')),
+  json: new Set(['true','false','null']),
+  shell: new Set('if then else elif fi for while in do done case esac function select until time coproc return exit export local readonly declare typeset unset shift break continue'.split(' ')),
+  sql: new Set('select from where and or not null is as insert into values update set delete create alter drop table index join left right inner outer on group by order having limit offset distinct union all case when then else end count sum avg min max primary key foreign references'.split(' ')),
+  css: new Set('important inherit initial unset revert auto none block flex grid inline inline-block absolute relative fixed sticky solid dashed hidden visible'.split(' '))
+};
+function highlightCode(source, language) {
+  if (language === 'plain') return esc(source);
+  if (language === 'markdown') {
+    return source.split('\n').map(line => {
+      if (/^\s{0,3}#{1,6}\s/.test(line)) return `<span class="tok-heading">${esc(line)}</span>`;
+      return esc(line).replace(/(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\([^)]+\))/g, '<span class="tok-markup">$1</span>');
+    }).join('\n');
+  }
+  const comments = language === 'python' || language === 'shell' || language === 'yaml' ? '(#[^\\n]*)' :
+    language === 'sql' ? '(--[^\\n]*|/\\*[\\s\\S]*?\\*/)' :
+    language === 'html' ? '(<!--[\\s\\S]*?-->)' :
+    language === 'css' ? '(/\\*[\\s\\S]*?\\*/)' :
+    language === 'json' ? '($^)' : '(//[^\\n]*|/\\*[\\s\\S]*?\\*/)';
+  const stringPattern = language === 'python'
+    ? "(\"\"\"[\\s\\S]*?\"\"\"|'''[\\s\\S]*?'''|`(?:\\\\.|[^`\\\\])*`|\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*')"
+    : "(`(?:\\\\.|[^`\\\\])*`|\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*')";
+  const tagPattern = language === 'html' ? '(<\\/?[A-Za-z][^>]*>)' : '($^)';
+  const regex = new RegExp(`${comments}|${stringPattern}|${tagPattern}|(\\b(?:0[xX][\\da-fA-F]+|\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?)\\b)|([A-Za-z_$][\\w$]*)`, 'g');
+  const keywords = editorKeywords[language] || editorKeywords.python;
+  let output = '', cursor = 0, match;
+  while ((match = regex.exec(source))) {
+    output += esc(source.slice(cursor, match.index));
+    const token = match[0];
+    let type = match[1] ? 'comment' : match[2] ? 'string' : match[3] ? 'markup' : match[4] ? 'number' : '';
+    if (!type && match[5]) {
+      const word = token.toLowerCase();
+      type = keywords.has(word) ? 'keyword' : /^(true|false|null|none|undefined)$/.test(word) ? 'literal' : /^\s*\(/.test(source.slice(regex.lastIndex)) ? 'function' : '';
+    }
+    output += type ? `<span class="tok-${type}">${esc(token)}</span>` : esc(token);
+    cursor = regex.lastIndex;
+  }
+  output += esc(source.slice(cursor));
+  return output;
+}
+
+function setupCodeEditor(editor, source, extension) {
+  const code = $('.code-highlight', editor), gutter = $('.line-numbers', editor);
+  const language = editorLanguages[extension] || ['Văn bản','plain'];
+  const languageBadge = $('.editor-language', editor.parentElement);
+  const undoButton = $('.editor-undo', editor.parentElement), redoButton = $('.editor-redo', editor.parentElement);
+  if (languageBadge) languageBadge.textContent = language[0];
+  const HISTORY_LIMIT = 8 * 1024 * 1024, OPERATION_LIMIT = 500;
+  const undoStack = [], redoStack = [];
+  let historySize = 0, pendingBefore = null, composing = false;
+  const pointOffset = (node, offset) => {
+    if (!code.contains(node)) return code.textContent.length;
+    const range = document.createRange();range.selectNodeContents(code);range.setEnd(node, offset);
+    return range.toString().length;
+  };
+  const selectionState = () => {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount) return {start:0,end:0};
+    const anchor = pointOffset(selection.anchorNode, selection.anchorOffset);
+    const focus = pointOffset(selection.focusNode, selection.focusOffset);
+    return {start:Math.min(anchor,focus),end:Math.max(anchor,focus)};
+  };
+  const pointAt = offset => {
+    const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+    let node, remaining = offset, last = null;
+    while ((node = walker.nextNode())) {
+      last = node;
+      if (remaining <= node.length) return [node,remaining];
+      remaining -= node.length;
+    }
+    return last ? [last,last.length] : [code,0];
+  };
+  const restoreSelection = state => {
+    const [startNode,startOffset] = pointAt(state.start), [endNode,endOffset] = pointAt(state.end);
+    const range = document.createRange();range.setStart(startNode,startOffset);range.setEnd(endNode,endOffset);
+    const selection = window.getSelection();selection.removeAllRanges();selection.addRange(range);
+  };
+  const ensureCaretVisible = () => {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount || !code.contains(selection.anchorNode)) return;
+    const offset=selectionState().end, line=(code.textContent.slice(0,offset).match(/\n/g)||[]).length;
+    const style=getComputedStyle(code), lineHeight=parseFloat(style.lineHeight)||20, paddingTop=parseFloat(style.paddingTop)||0, margin=22;
+    const caretTop=paddingTop+line*lineHeight, caretBottom=caretTop+lineHeight;
+    if (caretBottom > code.scrollTop+code.clientHeight-margin) code.scrollTop=caretBottom-code.clientHeight+margin;
+    else if (caretTop < code.scrollTop+margin) code.scrollTop=Math.max(0,caretTop-margin);
+    const rect = selection.getRangeAt(0).getBoundingClientRect(), view = code.getBoundingClientRect();
+    if (rect.right > view.right-margin) code.scrollLeft += rect.right-(view.right-margin);
+    else if (rect.left < view.left+margin) code.scrollLeft -= view.left+margin-rect.left;
+    syncScroll();
+  };
+  const syncScroll = () => { gutter.style.transform = `translateY(${-code.scrollTop}px)`; };
+  const paint = (content, state) => {
+    const oldTop=code.scrollTop, oldLeft=code.scrollLeft;
+    code.innerHTML = highlightCode(content, language[1]);
+    code.scrollTop=oldTop;code.scrollLeft=oldLeft;
+    gutter.textContent = Array.from({length: content.split('\n').length}, (_, index) => index + 1).join('\n');
+    restoreSelection(state);syncScroll();ensureCaretVisible();
+  };
+  const refreshHistoryButtons = () => {
+    if (undoButton) undoButton.disabled = undoStack.length === 0;
+    if (redoButton) redoButton.disabled = redoStack.length === 0;
+  };
+  const diffEdit = (before, after) => {
+    let start=0;
+    while (start<before.length && start<after.length && before[start]===after[start]) start++;
+    let suffix=0;
+    while (suffix<before.length-start && suffix<after.length-start && before[before.length-1-suffix]===after[after.length-1-suffix]) suffix++;
+    const removed=before.slice(start,before.length-suffix), inserted=after.slice(start,after.length-suffix);
+    return {start,removed,inserted,cost:removed.length+inserted.length};
+  };
+  const clearRedo = () => { for (const edit of redoStack) historySize-=edit.cost;redoStack.length=0; };
+  const finishInput = () => {
+    const after=code.textContent, afterSelection=selectionState();
+    if (pendingBefore && pendingBefore.text!==after) {
+      clearRedo();
+      const edit={...diffEdit(pendingBefore.text,after),beforeSelection:pendingBefore.selection,afterSelection};
+      if (edit.cost<=HISTORY_LIMIT) {
+        undoStack.push(edit);historySize+=edit.cost;
+        while (historySize>HISTORY_LIMIT || undoStack.length>OPERATION_LIMIT) historySize-=undoStack.shift().cost;
+      } else {undoStack.length=0;historySize=0;}
+    }
+    pendingBefore=null;paint(after,afterSelection);refreshHistoryButtons();
+  };
+  const applyHistory = undoing => {
+    const from=undoing?undoStack:redoStack, to=undoing?redoStack:undoStack, edit=from.pop();
+    if (!edit) return;
+    const current=code.textContent, remove=undoing?edit.inserted:edit.removed, insert=undoing?edit.removed:edit.inserted;
+    const content=current.slice(0,edit.start)+insert+current.slice(edit.start+remove.length);
+    to.push(edit);paint(content,undoing?edit.beforeSelection:edit.afterSelection);refreshHistoryButtons();
+  };
+  const undo = () => applyHistory(true), redo = () => applyHistory(false);
+  const insertText = value => {
+    const selection = window.getSelection();
+    if (!selection?.rangeCount || !code.contains(selection.anchorNode)) return;
+    pendingBefore={text:code.textContent,selection:selectionState()};
+    const range = selection.getRangeAt(0);range.deleteContents();
+    const textNode = document.createTextNode(value);
+    range.insertNode(textNode);range.setStartAfter(textNode);range.collapse(true);
+    selection.removeAllRanges();selection.addRange(range);finishInput();
+  };
+  code.textContent = source;
+  paint(source,{start:0,end:0});
+  code.addEventListener('beforeinput', event => {
+    if (event.inputType==='historyUndo' || event.inputType==='historyRedo') {
+      event.preventDefault();event.inputType==='historyUndo'?undo():redo();return;
+    }
+    if (!composing) pendingBefore={text:code.textContent,selection:selectionState()};
+  });
+  code.addEventListener('input', event => { if (!composing && !event.isComposing) finishInput(); });
+  code.addEventListener('compositionstart', () => { composing=true;pendingBefore={text:code.textContent,selection:selectionState()}; });
+  code.addEventListener('compositionend', () => { composing=false;finishInput(); });
+  code.addEventListener('scroll', syncScroll, { passive: true });
+  code.addEventListener('keydown', event => {
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase()==='z') {
+      event.preventDefault();event.shiftKey?redo():undo();
+    } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase()==='y') {
+      event.preventDefault();redo();
+    } else if (event.key === 'Enter' && !(event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      insertText('\n');
+    } else if (event.key === 'Tab') {
+      event.preventDefault();
+      insertText('    ');
+    }
+  });
+  code.addEventListener('paste', event => {
+    event.preventDefault();insertText(event.clipboardData.getData('text/plain').replace(/\r\n?/g,'\n'));
+  });
+  undoButton?.addEventListener('click',()=>{code.focus();undo();});
+  redoButton?.addEventListener('click',()=>{code.focus();redo();});
+  refreshHistoryButtons();code.focus();restoreSelection({start:source.length,end:source.length});ensureCaretVisible();
+}
 
 function toast(message, error = false) {
   const element = $('#toast');
@@ -236,7 +421,7 @@ function renderFileRows() {
       <td><button class="file-name" data-open="${esc(file.path)}"><span class="file-icon ${file.type}">${file.type === 'directory' ? '▰' : '▤'}</span><span>${esc(file.name)}</span></button>${searchMode ? `<small class="search-path">${esc(file.path.includes('/') ? file.path.slice(0,file.path.lastIndexOf('/')) : 'Thư mục gốc')}</small>` : ''}</td>
       <td>${file.type === 'directory' ? '—' : size(file.size)}</td><td><code>${esc(file.mode)}</code></td>
       <td>${new Date(file.modified).toLocaleString('vi-VN', { dateStyle: 'medium', timeStyle: 'short' })}</td>
-      <td><div class="row-actions"><button title="Sao chép" aria-label="Sao chép ${esc(file.name)}" data-copy="${esc(file.path)}" data-name="${esc(file.name)}">⧉</button><button title="Cắt" aria-label="Cắt ${esc(file.name)}" data-cut="${esc(file.path)}" data-name="${esc(file.name)}">✂</button><button title="Đổi tên" data-rename="${esc(file.path)}" data-name="${esc(file.name)}">✎</button><button title="Đổi quyền" data-chmod="${esc(file.path)}" data-mode="${esc(file.mode_octal)}">⌘</button>${canPreview(file.name) ? `<a class="preview-link" title="Mở xem trước" target="_blank" rel="noopener noreferrer" href="/api/preview?path=${encodeURIComponent(file.path)}">◉</a>` : ''}<a class="download-link" title="Tải xuống" href="/api/download?path=${encodeURIComponent(file.path)}">↓</a><button title="Xóa" data-delete="${esc(file.path)}">×</button></div></td>
+      <td><div class="row-actions"><button title="Sao chép" aria-label="Sao chép ${esc(file.name)}" data-copy="${esc(file.path)}" data-name="${esc(file.name)}">⧉</button><button title="Cắt" aria-label="Cắt ${esc(file.name)}" data-cut="${esc(file.path)}" data-name="${esc(file.name)}">✂</button><button title="Đổi tên" data-rename="${esc(file.path)}" data-name="${esc(file.name)}">✎</button>${me.role!=='read'&&file.type==='file'&&canEditText(file.name)?`<button title="Sửa nội dung" aria-label="Sửa nội dung ${esc(file.name)}" data-edit="${esc(file.path)}">▤</button>`:''}<button title="Đổi quyền" data-chmod="${esc(file.path)}" data-mode="${esc(file.mode_octal)}">⌘</button>${canPreview(file.name) ? `<a class="preview-link" title="Mở xem trước" target="_blank" rel="noopener noreferrer" href="/api/preview?path=${encodeURIComponent(file.path)}">◉</a>` : ''}<a class="download-link" title="Tải xuống" href="/api/download?path=${encodeURIComponent(file.path)}">↓</a><button title="Xóa" data-delete="${esc(file.path)}">×</button></div></td>
     </tr>`).join('');
   $('#empty').classList.toggle('hidden', filtered.length > 0);
   $('#empty b').textContent = searchMode ? 'Không tìm thấy kết quả' : 'Thư mục này chưa có tệp';
@@ -460,11 +645,12 @@ function wireActions() {
     await api('/api/rename', { method: 'POST', body: JSON.stringify({ path: button.dataset.rename, name }) });
     toast('Đã đổi tên'); await loadFiles(current);
   }, button.dataset.name));
+  $$('[data-edit]', $('#file-list')).forEach(button => button.onclick = () => openTextEditor(button.dataset.edit));
   $$('[data-chmod]', $('#file-list')).forEach(button => button.onclick = () => {
     const row = button.closest('tr');
     const name = $('.file-name span:last-child', row).textContent;
     const mode = button.dataset.mode;
-    inputModal('Đổi quyền truy cập', `Tên: ${name}`, mode, 'Nhập ba chữ số bát phân, ví dụ 640', async value => {
+    permissionModal(`Tên: ${name}`, mode, async value => {
       await api('/api/chmod', { method: 'POST', body: JSON.stringify({ path: button.dataset.chmod, mode: value }) });
       toast('Đã cập nhật quyền'); await loadFiles(current);
     });
@@ -512,10 +698,13 @@ function openModal(title, html, handler) {
   $('#modal-title').textContent = title;
   $('#modal-body').innerHTML = html;
   $('#modal').showModal();
-  const firstField = $('#modal-body input, #modal-body select');
+  const firstField = $('#modal-body input, #modal-body select, #modal-body textarea, #modal-body [contenteditable="true"]');
   (firstField || $('#modal-submit')).focus();
   $('#modal').onkeydown = event => {
+    if (event.defaultPrevented) return;
     if (event.key !== 'Enter' || event.isComposing) return;
+    if (event.target.closest('[contenteditable="true"]') && !(event.ctrlKey || event.metaKey)) return;
+    if (event.target.matches('textarea') && !(event.ctrlKey || event.metaKey)) return;
     const button = event.target.closest('button');
     if (button && !button.matches('#modal-submit')) return;
     event.preventDefault();
@@ -528,13 +717,35 @@ function openModal(title, html, handler) {
     catch (error) { toast(error.message, true); }
   };
 }
+async function openTextEditor(path) {
+  try {
+    const documentData = await api(`/api/edit?path=${encodeURIComponent(path)}`);
+    const extension = documentData.name.split('.').pop().toLowerCase();
+    let editorInput;
+    openModal(`Sửa: ${documentData.name}`, `<div class="editor-toolbar"><p class="muted editor-note"><span class="editor-language"></span> · UTF-8 · tối đa ${formatBytes(documentData.max_bytes)} · Ctrl+Z/Y hoàn tác/làm lại</p><div><button type="button" class="secondary editor-undo" disabled title="Hoàn tác (Ctrl+Z)">↶ Hoàn tác</button><button type="button" class="secondary editor-redo" disabled title="Làm lại (Ctrl+Y)">↷ Làm lại</button></div></div><div class="code-editor"><div class="line-number-clip" aria-hidden="true"><pre class="line-numbers"></pre></div><div class="code-pane"><pre class="text-editor code-highlight" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Nội dung tệp" spellcheck="false" autocapitalize="off" tabindex="0"></pre></div></div>`, async () => {
+      const result = await api('/api/edit', { method: 'POST', body: JSON.stringify({ path: documentData.path, content: editorInput.textContent, revision: documentData.revision }) });
+      documentData.revision = result.revision;
+      toast('Đã lưu nội dung tệp');
+      await loadFiles(current);
+    });
+    editorInput = $('#modal-body .text-editor');
+    setupCodeEditor($('#modal-body .code-editor'), documentData.content, extension);
+  } catch (error) { toast(error.message, true); }
+}
 function nameModal(title, label, handler, initialValue = '') {
   openModal(title, `<label>${label}<input name="value" value="${esc(initialValue)}" required maxlength="240" autofocus></label>`, form => handler(form.get('value')));
   if (initialValue) $('#modal-body input')?.select();
 }
-function inputModal(title, subject, value, hint, handler) {
-  openModal(title, `<p class="muted">${esc(subject)} · ${esc(hint)}</p><label>Quyền mới<input name="value" value="${esc(value)}" pattern="[0-7]{3}" required autofocus></label>`, form => handler(form.get('value')));
-  $('#modal-body input')?.select();
+function permissionModal(subject, initialMode, handler) {
+  const choices=[['0','Không có quyền'],['4','Chỉ đọc'],['2','Chỉ ghi'],['1','Chỉ thực thi'],['6','Đọc + ghi'],['5','Đọc + thực thi'],['3','Ghi + thực thi'],['7','Đọc + ghi + thực thi']];
+  const digits=String(initialMode).padStart(3,'0').slice(-3);
+  const select=(label,name,value)=>`<label>${label}<select name="${name}" class="permission-select">${choices.map(([mode,text])=>`<option value="${mode}" ${mode===value?'selected':''}>${text}</option>`).join('')}</select></label>`;
+  openModal('Đổi quyền truy cập', `<p class="muted">${esc(subject)}</p><div class="permission-grid">${select('Chủ sở hữu','owner',digits[0])}${select('Nhóm','group',digits[1])}${select('Người khác','other',digits[2])}</div><label class="octal-mode-label">Quyền số (bát phân)<input name="mode" value="${esc(digits)}" inputmode="numeric" pattern="[0-7]{3}" maxlength="3" required aria-describedby="chmod-help"></label><p id="chmod-help" class="muted chmod-help">Đọc = 4 · Ghi = 2 · Thực thi = 1. Ví dụ 640: chủ sở hữu đọc/ghi, nhóm chỉ đọc, người khác không có quyền.</p>`, async form=>handler(form.get('mode')));
+  const body=$('#modal-body'), modeInput=$('[name="mode"]',body), selects=$$('.permission-select',body);
+  const syncMode=()=>{modeInput.value=selects.map(item=>item.value).join('');};
+  const syncSelects=()=>{if(/^[0-7]{3}$/.test(modeInput.value))selects.forEach((item,index)=>item.value=modeInput.value[index]);};
+  selects.forEach(item=>item.addEventListener('change',syncMode));
+  modeInput.addEventListener('input',syncSelects);
 }
 function confirmModal(title, description, handler) {
   openModal(title, `<p class="muted">${esc(description)}</p>`, () => handler());

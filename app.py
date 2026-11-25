@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Root-confined Linux web file manager."""
-import argparse, io, json, os, re, secrets, shutil, sqlite3, stat, tempfile, time, zipfile, zlib, platform
+import argparse, hashlib, io, json, os, re, secrets, shutil, sqlite3, stat, tempfile, time, zipfile, zlib, platform
 from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path, PurePosixPath
@@ -17,6 +17,7 @@ MAX_ARCHIVE_ENTRIES=int(os.environ.get('FILEMANAGER_MAX_ARCHIVE_ENTRIES','10000'
 MAX_SEARCH_SCAN=int(os.environ.get('FILEMANAGER_MAX_SEARCH_SCAN','100000'))
 MAX_SESSION_IDLE=int(os.environ.get('FILEMANAGER_SESSION_IDLE','1800'))
 MAX_BACKUP=int(os.environ.get('FILEMANAGER_MAX_BACKUP',str(32*1024**2)))
+MAX_EDIT_BYTES=int(os.environ.get('FILEMANAGER_MAX_EDIT_BYTES',str(4*1024**2)))
 MIN_FREE_SPACE=int(os.environ.get('FILEMANAGER_MIN_FREE_SPACE',str(64*1024**2)))
 TEMP_DIR=os.environ.get('FILEMANAGER_TMP') or None
 if TEMP_DIR:
@@ -35,6 +36,7 @@ PREVIEW_TYPES={
     '.pdf':'application/pdf','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg',
     '.gif':'image/gif','.webp':'image/webp','.bmp':'image/bmp','.avif':'image/avif'
 }
+EDITABLE_TEXT_EXTENSIONS={'.txt','.log','.md','.csv','.json','.xml','.yaml','.yml','.toml','.ini','.conf','.py','.js','.css','.sh','.sql','.html','.htm','.rtf'}
 
 def dbconn():
     DB.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
@@ -381,6 +383,45 @@ def preview():
     response=send_file(p,mimetype=mimetype,as_attachment=False,download_name=p.name,conditional=True)
     if mimetype.startswith('text/') or mimetype=='application/json':response.headers['Content-Type']=mimetype+'; charset=utf-8'
     return response
+
+@app.get('/api/edit')
+@require()
+def read_text_for_editing():
+    p=resolve(request.args.get('path',''))
+    if not p.is_file() or p.suffix.casefold() not in EDITABLE_TEXT_EXTENSIONS:abort(415,'Chỉ hỗ trợ sửa các định dạng văn bản được cho phép')
+    try:
+        with p.open('rb') as source:raw=source.read(MAX_EDIT_BYTES+1)
+    except OSError as error:abort(403 if isinstance(error,PermissionError) else 400,f'Không đọc được tệp: {error.strerror or error}')
+    if len(raw)>MAX_EDIT_BYTES:abort(413,f'Tệp vượt giới hạn sửa trực tiếp {MAX_EDIT_BYTES} byte')
+    if b'\0' in raw:abort(415,'Tệp có dữ liệu nhị phân, không thể sửa như văn bản')
+    try:content=raw.decode('utf-8')
+    except UnicodeDecodeError:abort(415,'Tệp không dùng mã hóa UTF-8; hãy tải xuống để sửa bằng ứng dụng phù hợp')
+    audit('edit_open',rel(p),f'bytes={len(raw)}')
+    return jsonify(path=rel(p),name=p.name,content=content,revision=hashlib.sha256(raw).hexdigest(),max_bytes=MAX_EDIT_BYTES)
+
+@app.post('/api/edit')
+@require('write')
+@csrf
+def save_text_edit():
+    if request.content_length and request.content_length>MAX_EDIT_BYTES*6+8192:abort(413,'Yêu cầu sửa tệp vượt giới hạn')
+    path,data=bodypath();p=resolve(path)
+    if not p.is_file() or p.suffix.casefold() not in EDITABLE_TEXT_EXTENSIONS:abort(415,'Chỉ hỗ trợ sửa các định dạng văn bản được cho phép')
+    content=data.get('content');revision=data.get('revision')
+    if not isinstance(content,str) or not isinstance(revision,str):abort(400,'Nội dung hoặc phiên bản tệp không hợp lệ')
+    if '\0' in content:abort(400,'Nội dung không được chứa ký tự NUL')
+    raw=content.encode('utf-8')
+    if len(raw)>MAX_EDIT_BYTES:abort(413,f'Nội dung vượt giới hạn sửa trực tiếp {MAX_EDIT_BYTES} byte')
+    try:
+        with p.open('r+b') as target:
+            existing=target.read(MAX_EDIT_BYTES+1)
+            if len(existing)>MAX_EDIT_BYTES:abort(413,f'Tệp vượt giới hạn sửa trực tiếp {MAX_EDIT_BYTES} byte')
+            if hashlib.sha256(existing).hexdigest()!=revision:abort(409,'Tệp đã thay đổi từ nơi khác; hãy tải lại nội dung trước khi lưu')
+            target.seek(0);target.write(raw);target.truncate();target.flush()
+    except OSError as error:abort(403 if isinstance(error,PermissionError) else 400,f'Không lưu được tệp: {error.strerror or error}')
+    new_revision=hashlib.sha256(raw).hexdigest()
+    audit('edit_save',rel(p),f'bytes={len(raw)}')
+    return jsonify(ok=True,revision=new_revision,bytes=len(raw))
+
 def bodypath():
     d=request.get_json(silent=True) or {};p=d.get('path','')
     if not isinstance(p,str):abort(400,'Đường dẫn không hợp lệ')
@@ -571,7 +612,7 @@ def users():
 def add_user():
     d=request.get_json(silent=True) or {};name=str(d.get('username','')).strip();pw=str(d.get('password',''));role=d.get('role')
     if len(name)<3 or len(name)>64 or not name.replace('_','').replace('-','').isalnum():abort(400,'Tên đăng nhập cần 3–64 ký tự chữ, số, _ hoặc -')
-    if len(pw)<12:abort(400,'Mật khẩu cần ít nhất 12 ký tự')
+    if len(pw)<3:abort(400,'Mật khẩu cần ít nhất 3 ký tự')
     if role not in ROLES:abort(400,'Vai trò không hợp lệ')
     try:
         with dbconn() as c:c.execute('INSERT INTO users(username,password_hash,role,created_at) VALUES(?,?,?,?)',(name,generate_password_hash(pw),role,datetime.now(timezone.utc).isoformat(timespec='seconds')))
@@ -593,8 +634,8 @@ def main():
     sv=sub.add_parser('serve');sv.add_argument('--host',default='127.0.0.1');sv.add_argument('--port',type=int,default=8080);sv.add_argument('--cert');sv.add_argument('--key')
     a=parser.parse_args();initdb()
     if a.cmd=='create-admin':
-        pw=a.password or __import__('getpass').getpass('Mật khẩu (tối thiểu 12 ký tự): ')
-        if len(pw)<12:raise SystemExit('Mật khẩu cần ít nhất 12 ký tự')
+        pw=a.password or __import__('getpass').getpass('Mật khẩu (tối thiểu 3 ký tự): ')
+        if len(pw)<3:raise SystemExit('Mật khẩu cần ít nhất 3 ký tự')
         with dbconn() as d:d.execute('INSERT INTO users(username,password_hash,role,created_at) VALUES(?,?,?,?)',(a.username,generate_password_hash(pw),'admin',datetime.now(timezone.utc).isoformat(timespec='seconds')))
         print('Đã tạo quản trị viên '+a.username)
     else:
