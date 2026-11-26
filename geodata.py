@@ -92,6 +92,24 @@ def _read_column(stream, header, column):
     return values, stored_checksum == actual_checksum
 
 
+def _read_column_samples(stream, header, column, rows):
+    """Verify one full profile but decode only the elevations requested by callers."""
+    stream.seek(DTED_DATA_OFFSET + column * header['record_size'])
+    record=stream.read(header['record_size'])
+    if len(record)!=header['record_size'] or record[0]!=0xAA:
+        raise GeoDataError(f'Cột DTED {column} không có header hợp lệ')
+    if int.from_bytes(record[1:4],'big')!=column or int.from_bytes(record[4:6],'big')!=column or int.from_bytes(record[6:8],'big')!=0:
+        raise GeoDataError(f'Cột DTED {column} sai số thứ tự profile trong Data Record')
+    checksum_ok=(int.from_bytes(record[-4:],'big')==(sum(record[:-4])&0xFFFFFFFF))
+    values={}
+    for row in set(rows):
+        if row<0 or row>=header['rows']:continue
+        offset=8+row*2
+        raw=(record[offset]<<8)|record[offset+1]
+        values[row]=None if raw==0xFFFF else (-(raw&0x7FFF) if raw&0x8000 else raw&0x7FFF)
+    return values,checksum_ok
+
+
 def dted_preview(path, max_bytes, max_side=256):
     header = dted_header(path, max_bytes)
     width = min(max_side, header['columns'])
@@ -103,11 +121,11 @@ def dted_preview(path, max_bytes, max_side=256):
     checksum_warnings = 0
     with Path(path).open('rb') as stream:
         for out_x, source_x in enumerate(columns):
-            column, checksum_ok = _read_column(stream, header, source_x)
+            samples, checksum_ok = _read_column_samples(stream, header, source_x, rows_north_to_south)
             if not checksum_ok:
                 checksum_warnings += 1
             for out_y, source_y in enumerate(rows_north_to_south):
-                value = column[source_y]
+                value = samples[source_y]
                 grid[out_y][out_x] = value
                 if value is not None:
                     sampled_min = value if sampled_min is None else min(sampled_min, value)
@@ -154,8 +172,8 @@ def dted_elevations(path, points, max_bytes):
         column = round((longitude - header['origin_longitude']) / header['longitude_step'])
         profiles.setdefault(column, []).append((index, row))
     with Path(path).open('rb') as stream:
-        for column, requests in profiles.items():
-            values, checksum_ok = _read_column(stream, header, column)
+        for column, requests in sorted(profiles.items()):
+            values, checksum_ok = _read_column_samples(stream, header, column, (row for _,row in requests))
             for index, row in requests:
                 results[index] = {
                     'index': index,
@@ -225,43 +243,50 @@ def parse_log(path, max_bytes, max_records=MAX_LOG_RECORDS):
     path = Path(path)
     if path.stat().st_size > max_bytes:
         raise GeoDataError(f'File log vượt giới hạn đọc {max_bytes} byte')
-    text = path.read_text(encoding='utf-8-sig', errors='replace')
-    records = []
-    total = 0
-    structured = False
-    suffix = path.suffix.casefold()
-    if suffix == '.csv':
-        structured = True
-        for record in csv.DictReader(io.StringIO(text)):
-            total += 1
-            if len(records) < max_records:records.append(record)
-    elif suffix == '.json':
+    records=[]
+    total=0
+    suffix=path.suffix.casefold()
+    if suffix=='.csv':
+        with path.open(encoding='utf-8-sig',errors='replace',newline='') as stream:
+            for record in csv.DictReader(stream):
+                total+=1
+                if len(records)<max_records:records.append(record)
+    elif suffix=='.json':
         try:
-            root = json.loads(text)
-            if isinstance(root, list):
-                source = root
-            elif isinstance(root, dict):
-                collection = next((root[key] for key in ('records','events','logs','data','items') if isinstance(root.get(key), list)), None)
-                source = collection if collection is not None else [root]
-            else:
-                source = []
-            structured = True
-            total = len(source)
-            records = source[:max_records]
+            root=json.loads(path.read_text(encoding='utf-8-sig',errors='replace'))
+            if isinstance(root,list):source=root
+            elif isinstance(root,dict):
+                collection=next((root[key] for key in ('records','events','logs','data','items') if isinstance(root.get(key),list)),None)
+                source=collection if collection is not None else [root]
+            else:source=[]
+            total=len(source)
+            records=source[:max_records]
         except json.JSONDecodeError:
-            structured = False
-    if not structured:
-        for line in text.splitlines():
-            if not line.strip():
-                continue
-            total += 1
-            try:
-                value = json.loads(line)
-                record = value if isinstance(value, dict) else {'message': value}
-            except json.JSONDecodeError:
-                pairs = {key: value.strip('"\'') for key, value in re.findall(r'([A-Za-z_][\w.-]*)\s*[=:]\s*("[^"]*"|\'[^\']*\'|[^,;\s]+)', line)}
-                record = pairs if pairs else {'message': line[:500]}
-            if len(records) < max_records:records.append(record)
-    truncated = total > max_records
-    normalized = [_record(record, index, str(record) if isinstance(record, str) else '') for index, record in enumerate(records)]
-    return {'records': normalized, 'total_records': total, 'truncated': truncated, 'coordinate_records': sum(r['latitude'] is not None and r['longitude'] is not None for r in normalized)}
+            total=0
+            with path.open(encoding='utf-8-sig',errors='replace') as stream:
+                for line in stream:
+                    if not line.strip():continue
+                    total+=1
+                    try:
+                        value=json.loads(line)
+                        record=value if isinstance(value,dict) else {'message':value}
+                    except json.JSONDecodeError:
+                        pairs={key:value.strip("\"'") for key,value in re.findall(r"""([A-Za-z_][\w.-]*)\s*[=:]\s*("[^"]*"|'[^']*'|[^,;\s]+)""",line)}
+                        record=pairs if pairs else {'message':line[:500]}
+                    if len(records)<max_records:records.append(record)
+    else:
+        with path.open(encoding='utf-8-sig',errors='replace') as stream:
+            for line in stream:
+                if not line.strip():continue
+                total+=1
+                try:
+                    value=json.loads(line)
+                    record=value if isinstance(value,dict) else {'message':value}
+                except json.JSONDecodeError:
+                    pairs={key:value.strip("\"'") for key,value in re.findall(r"""([A-Za-z_][\w.-]*)\s*[=:]\s*("[^"]*"|'[^']*'|[^,;\s]+)""",line)}
+                    record=pairs if pairs else {'message':line[:500]}
+                if len(records)<max_records:records.append(record)
+    truncated=total>max_records
+    normalized=[_record(record,index,str(record) if isinstance(record,str) else '') for index,record in enumerate(records)]
+    return {'records':normalized,'total_records':total,'truncated':truncated,
+            'coordinate_records':sum(r['latitude'] is not None and r['longitude'] is not None for r in normalized)}

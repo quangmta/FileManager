@@ -126,7 +126,8 @@ async function loadResources() {
   resourceHistory.networkDown.push(interfaces.reduce((sum,item)=>sum+item.rx_rate,0));resourceHistory.networkUp.push(interfaces.reduce((sum,item)=>sum+item.tx_rate,0));
   for(const key of ['memory','swap','networkDown','networkUp'])if(resourceHistory[key].length>30)resourceHistory[key].shift();
   const received=interfaces.reduce((sum,item)=>sum+item.rx_bytes,0),sent=interfaces.reduce((sum,item)=>sum+item.tx_bytes,0);
-  $('#memory-detail').textContent=`${systemBytes(data.memory.used)} (${data.memory.percent.toFixed(1)}%) của ${systemBytes(data.memory.total)}`;
+  const memoryUsed=data.memory.display_used||systemBytes(data.memory.used),memoryTotal=data.memory.display_total||systemBytes(data.memory.total);
+  $('#memory-detail').textContent=`${memoryUsed} (${data.memory.percent.toFixed(1)}%) của ${memoryTotal}`;
   $('#memory-cache').textContent=data.memory.cache===null?'Cache —':`Cache ${systemBytes(data.memory.cache)}`;
   $('#swap-detail').textContent=data.swap.total?`${systemBytes(data.swap.used)} (${data.swap.percent.toFixed(1)}%) của ${systemBytes(data.swap.total)}`:'Không có swap';
   $('#network-download').textContent=formatRate(resourceHistory.networkDown.at(-1)||0);

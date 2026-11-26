@@ -1,6 +1,11 @@
 """Geo API routes."""
 import app as core
 from app import *
+from functools import lru_cache
+
+@lru_cache(maxsize=8)
+def _cached_dted_preview(path, modified_ns, file_size, max_bytes):
+    return dted_preview(path,max_bytes)
 
 def geo_file(relpath, extensions):
     path=resolve(relpath)
@@ -46,7 +51,9 @@ def geo_maps():
 @require()
 def geo_map_preview():
     path=geo_file(request.args.get('path',''),{'.dt2'})
-    try:data=dted_preview(path,MAX_GEO_FILE_BYTES)
+    try:
+        metadata=path.stat()
+        data=_cached_dted_preview(str(path),metadata.st_mtime_ns,metadata.st_size,MAX_GEO_FILE_BYTES)
     except GeoDataError as error:abort(415,str(error))
     except OSError as error:abort(400,f'Không đọc được tile DTED: {error.strerror or error}')
     audit('geo_map_view',rel(path))

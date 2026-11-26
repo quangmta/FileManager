@@ -26,15 +26,22 @@ def _qnx_memory_snapshot(top_output=''):
     if match:
         available=_qnx_memory_bytes(match.group(1),match.group(2))
         total=_qnx_memory_bytes(match.group(3),match.group(4))
+        display_available=f'{match.group(1)} {match.group(2).upper()}B'
+        display_total=f'{match.group(3)} {match.group(4).upper()}B'
     else:
         match=re.search(r'Memory:\s*([\d.]+)\s*([KMG])\s+total,\s*([\d.]+)\s*([KMG])\s+avail',top_output,re.I)
         if not match:abort(503,'Không phân tích được tổng/khả dụng RAM từ pidin info hoặc top.')
         total=_qnx_memory_bytes(match.group(1),match.group(2))
         available=_qnx_memory_bytes(match.group(3),match.group(4))
+        display_total=f'{match.group(1)} {match.group(2).upper()}B'
+        display_available=f'{match.group(3)} {match.group(4).upper()}B'
     if not total or available is None:abort(503,'QNX trả số liệu bộ nhớ không hợp lệ.')
     available=min(total,available)
     used=max(0,total-available)
+    total_unit=display_total.split()[1];unit_scale={'KB':1024,'MB':1024**2,'GB':1024**3}[total_unit]
+    display_used=f'{used/unit_scale:g} {total_unit}'
     return {'total':total,'available':available,'used':used,'cache':None,
+            'display_total':display_total,'display_used':display_used,
             'percent':round(used/total*100,1),'cpu_count':max(1,cpu_count)}
 
 def _qnx_cpu_snapshot(top_output):
@@ -51,18 +58,16 @@ def _qnx_cpu_snapshot(top_output):
     return [{'name':f'cpu{index}','percent':0.0} for index in range(count)]
 
 def _qnx_process_snapshot(total_memory):
+    # The custom format keeps parsing stable across QNX releases and locales.
     output=_qnx_command(QNX_PIDIN,'-F','%a %N %U %u %v')
     page_size=4096
     try:page_size=int(os.sysconf('SC_PAGE_SIZE'))
     except (AttributeError,ValueError,OSError):pass
-    sampled_at=time.monotonic();processes=[]
-    for line in output.splitlines():
-        fields=line.split()
-        if len(fields)<5:continue
-        try:
-            pid=int(fields[0]);uid=int(fields[2],0);user_ticks=int(fields[3],0);system_ticks=int(fields[4],0)
-        except ValueError:continue
-        if pid<1:continue
+    sampled_at=time.monotonic();processes=[];seen=set()
+
+    def append_process(pid,name,uid=0,user_ticks=0,system_ticks=0):
+        if pid<1 or pid in seen or not name:return
+        seen.add(pid)
         rss_pages=0
         try:
             vmstat=(Path('/proc')/str(pid)/'vmstat').read_text(encoding='ascii',errors='replace')
@@ -74,12 +79,37 @@ def _qnx_process_snapshot(total_memory):
             username=pwd.getpwuid(uid).pw_name
         except (ImportError,KeyError):username=str(uid)
         memory_bytes=rss_pages*page_size
-        name=fields[1]
         processes.append({'pid':pid,'name':name,'user':username,'uid':uid,'state':'?',
             'process_group':pid,'cpu_ticks':user_ticks+system_ticks,'start_time':0,
             'memory_bytes':memory_bytes,'memory_percent':round(memory_bytes/total_memory*100,2) if total_memory else 0,
             'sampled_at':sampled_at,'can_control':False,
             'control_reason':'Điều khiển tiến trình QNX chưa được bật'})
+
+    for line in output.splitlines():
+        fields=line.split()
+        if len(fields)<2:continue
+        try:pid=int(fields[0])
+        except ValueError:continue
+        uid=user_ticks=system_ticks=0
+        if len(fields)>=5:
+            try:
+                uid=int(fields[-3],0);user_ticks=int(fields[-2],0);system_ticks=int(fields[-1],0)
+                name=' '.join(fields[1:-3])
+            except ValueError:name=fields[1]
+        else:name=fields[1]
+        append_process(pid,name,uid,user_ticks,system_ticks)
+
+    # Some QNX images ship an older pidin that ignores or formats -F differently.
+    # Fall back to its documented default PID-TID/name listing instead of showing an empty table.
+    if not processes:
+        for line in _qnx_command(QNX_PIDIN).splitlines():
+            fields=line.split()
+            if len(fields)<2:continue
+            match=re.fullmatch(r'(\d+)(?:-(\d+))?',fields[0])
+            if not match:continue
+            pid=int(match.group(1))
+            name_index=2 if len(fields)>2 and fields[1].isdigit() else 1
+            append_process(pid,fields[name_index])
     return processes
 
 def _qnx_system_processes():
