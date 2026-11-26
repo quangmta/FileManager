@@ -420,7 +420,8 @@ async function loadGeoMap(path) {
     geoMap={path,...response.map};geoManualPoint=null;
     $('#geo-map-empty').classList.add('hidden');$('#geo-map-title').textContent=entry?.name||path;
     $('#geo-map-summary').textContent=`Lat ${geoMap.min_latitude.toFixed(5)}° to ${geoMap.max_latitude.toFixed(5)}° · Lon ${geoMap.min_longitude.toFixed(5)}° to ${geoMap.max_longitude.toFixed(5)}° · ${geoMap.columns} × ${geoMap.rows} ô`;
-    $('#geo-map-stats').textContent=geoMap.sampled_min_elevation_m===null?'Không có điểm độ cao hợp lệ':`Mẫu xem trước: ${geoMap.sampled_min_elevation_m}–${geoMap.sampled_max_elevation_m} m`;
+    const sampleStats=geoMap.sampled_min_elevation_m===null?'Không có điểm độ cao hợp lệ':`Mẫu xem trước: ${geoMap.sampled_min_elevation_m}–${geoMap.sampled_max_elevation_m} m`;
+    $('#geo-map-stats').textContent=`${sampleStats}${geoMap.checksum_warning_columns?` · ${geoMap.checksum_warning_columns}/${geoMap.checksum_checked_columns} cột mẫu lỗi checksum`:''}`;
     $('#geo-map-legend').innerHTML=`Cao độ (m) <span class="geo-height-gradient"></span><small>${geoMap.sampled_min_elevation_m??'—'} → ${geoMap.sampled_max_elevation_m??'—'}</small>`;
     $('#geo-map-format').textContent=`DTED · ${geoMap.preview_columns}×${geoMap.preview_rows}`;
     renderGeoCatalog();updateGeoCoverage();drawGeoMap();
@@ -497,22 +498,23 @@ function clearGeoLog(message) {
 }
 
 function stopGeoPlayback() {
-  if(geoPlayTimer){clearInterval(geoPlayTimer);geoPlayTimer=null;}
+  if(geoPlayTimer){clearTimeout(geoPlayTimer);geoPlayTimer=null;}
   const button=$('#geo-play');if(button)button.textContent='▶ Phát lại';
 }
 
 function updateGeoCoverage() {
   if(!geoMap)return;
   const coordinates=geoLogRows.filter(row=>row.latitude!==null&&row.longitude!==null),inside=coordinates.filter(row=>row.latitude>=geoMap.min_latitude&&row.latitude<=geoMap.max_latitude&&row.longitude>=geoMap.min_longitude&&row.longitude<=geoMap.max_longitude).length;
-  $('#geo-map-summary').textContent=`Lat ${geoMap.min_latitude.toFixed(5)}°…${geoMap.max_latitude.toFixed(5)}° · Lon ${geoMap.min_longitude.toFixed(5)}°…${geoMap.max_longitude.toFixed(5)}° · ${geoMap.columns}×${geoMap.rows} ô · ${inside}/${coordinates.length} điểm log nằm trong tile`;
+  $('#geo-map-summary').textContent=`Lat ${geoMap.min_latitude.toFixed(5)}°…${geoMap.max_latitude.toFixed(5)}° · Lon ${geoMap.min_longitude.toFixed(5)}°…${geoMap.max_longitude.toFixed(5)}° · ${geoMap.columns}×${geoMap.rows} ô · bước ${geoMap.latitude_interval_seconds}″/${geoMap.longitude_interval_seconds}″ · ${inside}/${coordinates.length} điểm log nằm trong tile`;
 }
 
 function renderGeoLogs() {
+  if(geoPlayTimer)stopGeoPlayback();
   const query=$('#geo-log-query').value.trim().toLocaleLowerCase(),from=$('#geo-log-from').value,to=$('#geo-log-to').value;
   geoFilteredRows=geoLogRows.filter(row=>{const day=row.timestamp.slice(0,10);return (!query||`${row.message} ${row.raw} ${row.latitude??''} ${row.longitude??''}`.toLocaleLowerCase().includes(query))&&(!from||(day&&day>=from))&&(!to||(day&&day<=to));});
   if(!geoFilteredRows.length){$('#geo-log-body').innerHTML='<tr><td colspan="6" class="muted">Không có bản ghi khớp bộ lọc.</td></tr>';}
   else $('#geo-log-body').innerHTML=geoFilteredRows.slice(0,1000).map((row,index)=>`<tr tabindex="0" data-geo-log-index="${index}" class="${row===geoSelectedRecord?'selected':''}"><td>${row.index+1}</td><td>${esc(row.timestamp||'—')}</td><td>${row.latitude===null?'—':row.latitude.toFixed(6)}</td><td>${row.longitude===null?'—':row.longitude.toFixed(6)}</td><td>${row.altitude_m===null?'—':`${row.altitude_m} m`}</td><td title="${esc(row.raw)}">${esc(row.message||row.raw||'—')}</td></tr>`).join('');
-  $$('#geo-log-body [data-geo-log-index]').forEach(row=>row.onclick=()=>{const index=Number(row.dataset.geoLogIndex);geoPlaybackIndex=index;$('#geo-timeline').value=index;updateGeoTimeLabel();inspectGeoPoint(geoFilteredRows[index],geoFilteredRows[index]);renderGeoLogSelection();drawGeoMap();});
+  $$('#geo-log-body [data-geo-log-index]').forEach(row=>row.onclick=()=>{if(geoPlayTimer)stopGeoPlayback();const index=Number(row.dataset.geoLogIndex);geoPlaybackIndex=index;$('#geo-timeline').value=index;updateGeoTimeLabel();inspectGeoPoint(geoFilteredRows[index],geoFilteredRows[index]);renderGeoLogSelection();drawGeoMap();});
   $('#geo-timeline').max=Math.max(0,geoFilteredRows.length-1);geoPlaybackIndex=Math.min(geoPlaybackIndex,Math.max(0,geoFilteredRows.length-1));$('#geo-timeline').value=geoPlaybackIndex;$('#geo-timeline').disabled=geoFilteredRows.length<2;$('#geo-play').disabled=geoFilteredRows.length<2;
   $('#geo-log-summary').textContent=`${$('#geo-log-select').selectedOptions[0]?.textContent||'Log'} · ${geoFilteredRows.length} / ${geoLogRows.length} bản ghi đang hiển thị`;
   updateGeoTimeLabel();drawGeoMap();$('#geo-export').disabled=!geoFilteredRows.length;
@@ -536,6 +538,22 @@ function showPlaybackRecord(row) {
   drawGeoMap();renderGeoLogSelection();
 }
 
+function geoPlaybackDelay() {
+  const current=Date.parse(geoFilteredRows[geoPlaybackIndex]?.timestamp||''),next=Date.parse(geoFilteredRows[geoPlaybackIndex+1]?.timestamp||'');
+  const recordedGap=Number.isFinite(current)&&Number.isFinite(next)&&next>current?next-current:5000;
+  return Math.max(50,recordedGap/Number($('#geo-play-speed').value||10));
+}
+
+function scheduleGeoPlaybackStep() {
+  if(geoPlaybackIndex>=geoFilteredRows.length-1){stopGeoPlayback();return;}
+  geoPlayTimer=setTimeout(()=>{
+    geoPlayTimer=null;
+    if(geoPlaybackIndex>=geoFilteredRows.length-1){stopGeoPlayback();return;}
+    geoPlaybackIndex++;$('#geo-timeline').value=geoPlaybackIndex;updateGeoTimeLabel();showPlaybackRecord(geoFilteredRows[geoPlaybackIndex]);
+    scheduleGeoPlaybackStep();
+  },geoPlaybackDelay());
+}
+
 function exportGeoLogs() {
   const rows=[['index','timestamp','latitude','longitude','altitude_m','message','raw'],...geoFilteredRows.map(row=>[row.index,row.timestamp,row.latitude??'',row.longitude??'',row.altitude_m??'',row.message,row.raw])];
   const csv=rows.map(row=>row.map(value=>`"${String(value).replace(/"/g,'""')}"`).join(',')).join('\r\n');
@@ -548,9 +566,10 @@ $('#geo-map-select').onchange=event=>event.target.value?loadGeoMap(event.target.
 $('#geo-log-select').onchange=event=>event.target.value?loadGeoLog(event.target.value):clearGeoLog('Chưa chọn tệp log.');
 $('#geo-load-log').onclick=()=>$('#geo-log-select').value&&loadGeoLog($('#geo-log-select').value);
 ['geo-log-query','geo-log-from','geo-log-to'].forEach(id=>$('#'+id).addEventListener(id==='geo-log-query'?'input':'change',renderGeoLogs));
-$('#geo-timeline').oninput=()=>{geoPlaybackIndex=Number($('#geo-timeline').value);updateGeoTimeLabel();showPlaybackRecord(geoFilteredRows[geoPlaybackIndex]);};
+$('#geo-timeline').oninput=()=>{if(geoPlayTimer)stopGeoPlayback();geoPlaybackIndex=Number($('#geo-timeline').value);updateGeoTimeLabel();showPlaybackRecord(geoFilteredRows[geoPlaybackIndex]);};
 $('#geo-timeline').onchange=()=>{const row=geoFilteredRows[geoPlaybackIndex];if(row?.latitude!==null&&row?.latitude!==undefined)inspectGeoPoint(row,row);};
-$('#geo-play').onclick=()=>{if(geoPlayTimer){stopGeoPlayback();return;}if(!geoFilteredRows.length)return;if(geoPlaybackIndex>=geoFilteredRows.length-1){geoPlaybackIndex=0;$('#geo-timeline').value=0;showPlaybackRecord(geoFilteredRows[0]);}$('#geo-play').textContent='Ⅱ Tạm dừng';geoPlayTimer=setInterval(()=>{if(geoPlaybackIndex>=geoFilteredRows.length-1){stopGeoPlayback();return;}geoPlaybackIndex++;$('#geo-timeline').value=geoPlaybackIndex;updateGeoTimeLabel();showPlaybackRecord(geoFilteredRows[geoPlaybackIndex]);},500);};
+$('#geo-play-speed').onchange=()=>{if(geoPlayTimer){clearTimeout(geoPlayTimer);geoPlayTimer=null;scheduleGeoPlaybackStep();}};
+$('#geo-play').onclick=()=>{if(geoPlayTimer){stopGeoPlayback();return;}if(!geoFilteredRows.length)return;if(geoPlaybackIndex>=geoFilteredRows.length-1){geoPlaybackIndex=0;$('#geo-timeline').value=0;showPlaybackRecord(geoFilteredRows[0]);}$('#geo-play').textContent='Ⅱ Tạm dừng';scheduleGeoPlaybackStep();};
 $('#geo-export').onclick=exportGeoLogs;
 $('#geo-map-canvas').addEventListener('click',async event=>{if(!geoMap)return;const rect=event.currentTarget.getBoundingClientRect(),x=(event.clientX-rect.left)/rect.width,y=(event.clientY-rect.top)/rect.height;const point={latitude:geoMap.max_latitude-y*(geoMap.max_latitude-geoMap.min_latitude),longitude:geoMap.min_longitude+x*(geoMap.max_longitude-geoMap.min_longitude)};await inspectGeoPoint(point);});
 window.addEventListener('resize',drawGeoMap);

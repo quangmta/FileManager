@@ -47,18 +47,24 @@ def dted_header(path, max_bytes):
     if lon_interval <= 0 or lat_interval <= 0:
         raise GeoDataError('Khoảng cách lưới DTED không hợp lệ')
     origin_lon, origin_lat = _angle(uhl[4:12].decode('ascii','replace'), 'E','W'), _angle(uhl[12:20].decode('ascii','replace'), 'N','S')
+    if abs(origin_lon) > 180 or abs(origin_lat) > 90:
+        raise GeoDataError('Tọa độ gốc trong UHL vượt giới hạn địa lý')
     record_size = 12 + 2 * lat_count
     expected_size = DTED_DATA_OFFSET + lon_count * record_size
     if path.stat().st_size < expected_size:
         raise GeoDataError('File DTED bị thiếu hoặc cụt dữ liệu cột')
     lat_step, lon_step = lat_interval / 3600, lon_interval / 3600
+    max_lat = origin_lat + (lat_count - 1) * lat_step
+    max_lon = origin_lon + (lon_count - 1) * lon_step
+    if not (-90 <= origin_lat <= max_lat <= 90 and -180 <= origin_lon <= max_lon <= 180):
+        raise GeoDataError('Phạm vi tọa độ DTED vượt giới hạn địa lý')
     return {
         'origin_latitude': origin_lat, 'origin_longitude': origin_lon,
         'latitude_interval_seconds': lat_interval, 'longitude_interval_seconds': lon_interval,
         'latitude_step': lat_step, 'longitude_step': lon_step,
         'columns': lon_count, 'rows': lat_count, 'record_size': record_size,
-        'min_latitude': origin_lat, 'max_latitude': origin_lat + (lat_count - 1) * lat_step,
-        'min_longitude': origin_lon, 'max_longitude': origin_lon + (lon_count - 1) * lon_step,
+        'min_latitude': origin_lat, 'max_latitude': max_lat,
+        'min_longitude': origin_lon, 'max_longitude': max_lon,
         'bytes': path.stat().st_size,
     }
 
@@ -68,12 +74,17 @@ def _read_column(stream, header, column):
     record = stream.read(header['record_size'])
     if len(record) != header['record_size'] or record[0] != 0xAA:
         raise GeoDataError(f'Cột DTED {column} không có header hợp lệ')
+    block_number = int.from_bytes(record[1:4], 'big')
+    longitude_number = int.from_bytes(record[4:6], 'big')
+    latitude_number = int.from_bytes(record[6:8], 'big')
+    if block_number != column or longitude_number != column or latitude_number != 0:
+        raise GeoDataError(f'Cột DTED {column} sai số thứ tự profile trong Data Record')
     stored_checksum = int.from_bytes(record[-4:], 'big')
     actual_checksum = sum(record[:-4]) & 0xFFFFFFFF
     values = []
     for offset in range(8, 8 + 2 * header['rows'], 2):
         raw = int.from_bytes(record[offset:offset + 2], 'big')
-        if raw in (0xFFFF, 0x8000):
+        if raw == 0xFFFF:
             values.append(None)
         else:
             magnitude = raw & 0x7FFF
@@ -104,7 +115,7 @@ def dted_preview(path, max_bytes, max_side=256):
     return {
         **header, 'grid': grid, 'preview_columns': len(columns), 'preview_rows': len(rows_north_to_south),
         'sampled_min_elevation_m': sampled_min, 'sampled_max_elevation_m': sampled_max,
-        'checksum_warning_columns': checksum_warnings,
+        'checksum_checked_columns': len(columns), 'checksum_warning_columns': checksum_warnings,
     }
 
 
