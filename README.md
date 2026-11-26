@@ -11,12 +11,18 @@
 - Tải thư mục xuống dạng ZIP; tải ZIP lên và giải nén an toàn trong thư mục đang mở, có giới hạn số mục/kích thước, chống path traversal và xung đột tên.
 - Tìm kiếm đệ quy theo tên, loại, dung lượng và ngày sửa đổi; kết quả tối đa 1.000 mục.
 - Tiến độ, tốc độ và nút hủy khi tải lên; trình duyệt quản lý tiến độ/hủy tải xuống. Kiểm tra dung lượng trống trước khi ghi và cảnh báo phân vùng gần mức dự phòng.
-- Thống kê dung lượng đã dùng/còn trống trên các phân vùng gắn kết.
+- **Giám sát hệ thống trên Linux**: danh sách tiến trình, CPU/RAM/mạng theo thời gian thực, tín hiệu quản lý tiến trình có bảo vệ và tab dung lượng các phân vùng.
 - Trang **Bản đồ & nhật ký** chỉ đọc tile DTED `.dt2` và log CSV/JSON/JSONL/text; hỗ trợ lớp phủ nhiều quỹ đạo, biểu đồ/statistics, phân tích AGL, tìm tile theo tọa độ và xuất báo cáo.
 - Tài khoản `read` (chỉ xem/tải), `write` (thêm/sửa/xóa/chmod), `admin` (toàn quyền và quản lý người dùng/nhật ký).
 - Nhật ký đăng nhập/thất bại, tải lên, CRUD, chmod và quản lý tài khoản; lưu SQLite, hiển thị 500 sự kiện gần nhất.
 - Phiên được thu hồi phía máy chủ khi hết hạn không hoạt động; admin xem/thu hồi phiên khác và tải/khôi phục bản sao lưu tài khoản + nhật ký.
 - HTTP để chạy thử trong mạng tin cậy; HTTPS bằng TLS trực tiếp hoặc reverse proxy Nginx.
+
+## Cấu trúc giao diện
+
+JavaScript phía trình duyệt được chia theo nghiệp vụ trong `static/`: `common.js` chứa trạng thái dùng chung, đăng nhập và điều hướng; `files.js` xử lý duyệt/thao tác tệp; `maps.js` xử lý bản đồ và log; `system-monitor.js` xử lý giám sát tài nguyên; `admin.js` xử lý người dùng, phiên và nhật ký quản trị. `app.js` là điểm khởi chạy nhỏ. Các script được nạp bằng `defer` theo thứ tự trong `index.html`; giữ thứ tự này để các tiện ích và trạng thái dùng chung có sẵn trước khi khởi chạy.
+
+Backend giữ cấu hình, xác thực chung và lệnh khởi chạy trong `app.py`. Các route được chia trong `routes/`: `auth.py`, `files.py`, `geo.py`, `system.py`, `transfers.py` và `admin.py`. `geodata.py` chứa bộ đọc DTED/log. Khi thêm API mới, đặt route vào module đúng nghiệp vụ; `app.py` đăng ký các module sau khi khởi tạo app và các hàm dùng chung.
 
 ## Cài đặt nhanh trên Ubuntu
 
@@ -121,7 +127,8 @@ WantedBy=multi-user.target
 7. Tải lên hiển thị phần trăm, tốc độ và nút **Hủy**. Nút này hủy request từ trình duyệt; nếu server đã hoàn tất ghi trước khi nhận lệnh hủy thì tệp có thể đã được lưu. Download dùng trình tải của trình duyệt để hỗ trợ tiến độ và hủy mà không phải giữ toàn bộ file trong bộ nhớ giao diện. Upload/giải nén bị chặn nếu không đủ dung lượng trống hoặc sẽ làm mức trống thấp hơn `FILEMANAGER_MIN_FREE_SPACE`.
 8. Admin vào **Quản trị** để tạo tài khoản `read`, `write`, `admin`, xem nhật ký/phiên và thu hồi phiên khác. Phiên tự hết hạn sau `FILEMANAGER_SESSION_IDLE` giây không hoạt động (mặc định 30 phút); phiên hiện tại được đánh dấu và không thể thu hồi từ chính nó.
 9. Trong **Sao lưu & khôi phục**, tải JSON backup trước khi khôi phục. Backup chứa tài khoản (bao gồm password hash) và tối đa 100.000 sự kiện audit, kèm cờ nếu audit bị cắt bớt. Khôi phục thay thế danh sách tài khoản và audit, yêu cầu xác nhận và giữ phiên admin hiện tại nếu tài khoản đó có trong backup. Thông tin root/giới hạn trong backup chỉ để tham khảo; khôi phục không đổi biến môi trường, secret hay nội dung file. Giữ file backup ở nơi được bảo vệ như database.
-10. Vào **Dung lượng ổ đĩa** để xem phân vùng, phần trăm dùng, dung lượng còn trống. Cảnh báo hiện trên phân vùng có mức trống thấp hơn ngưỡng dự phòng.
+10. Vào **Giám sát hệ thống → Dung lượng ổ đĩa** để xem phân vùng, phần trăm dùng và dung lượng còn trống. Cảnh báo hiện trên phân vùng có mức trống thấp hơn ngưỡng dự phòng.
+11. Trong **Giám sát hệ thống**, tab **Tiến trình** hiển thị tên, user, PID, CPU và bộ nhớ; `% CPU tổng` là phần trăm trên tổng năng lực các CPU logic của máy nên tối đa 100%. Tab **Tài nguyên** tự làm mới mức CPU từng lõi, RAM và lưu lượng mạng kèm biểu đồ. Dung lượng RAM/swap dùng GB thập phân (1 GB = 1.000.000.000 byte) để khớp cách GNOME System Monitor hiển thị; số liệu nguồn Linux đọc từ `/proc` theo byte. Admin chọn thao tác **Tạm dừng**, **Tiếp tục**, **Kết thúc** (TERM) hoặc **Buộc dừng** (KILL) rồi **Thực thi**. Kết thúc/buộc dừng cần xác nhận. PID 1, tiến trình root, tiến trình cùng process group với server và tên được bảo vệ không thể điều khiển. Dùng `FILEMANAGER_PROTECTED_PROCESSES` để khai báo thêm tên tiến trình cần bảo vệ. Các tab Tiến trình/Tài nguyên cần Linux `/proc`; QNX hiện chỉ hỗ trợ tab dung lượng qua `FILEMANAGER_MOUNTS`.
 
 Tùy chọn độ rộng cột được lưu trong trình duyệt đang dùng. Copy/Cut clipboard cũng chỉ nằm trong giao diện trình duyệt hiện tại.
 
@@ -199,7 +206,7 @@ Truy cập `https://<IP-hoac-hostname-KR260>:8443`; trình duyệt cần tin c�
 
 #### 4. Thử nghiệm trên target
 
-Thực hiện các ca TC-01 đến TC-36 bên dưới với dữ liệu thử, đặc biệt TC-04/05/06/08/10/12/13/18/26–36. Xác nhận các phân vùng trong `FILEMANAGER_MOUNTS` đúng với mount thật, upload lớn không làm đầy RAM, database vẫn tồn tại sau reboot, quyền file đúng với filesystem đang dùng, và truy cập HTTPS được từ máy khách. Kết quả trên Linux chỉ kiểm chứng chức năng chung; chỉ ghi nhận tương thích QNX sau khi các ca này chạy đạt trên chính board/image.
+Thực hiện các ca TC-01 đến TC-36 bên dưới với dữ liệu thử, đặc biệt TC-04/05/06/08/10/12/13/18/26–36. Trên QNX, bỏ qua các ca giám sát cần Linux `/proc` và xác nhận riêng tab dung lượng với mount đã cấu hình. Xác nhận các phân vùng trong `FILEMANAGER_MOUNTS` đúng với mount thật, upload lớn không làm đầy RAM, database vẫn tồn tại sau reboot, quyền file đúng với filesystem đang dùng, và truy cập HTTPS được từ máy khách. Kết quả trên Linux chỉ kiểm chứng chức năng chung; chỉ ghi nhận tương thích QNX sau khi các ca này chạy đạt trên chính board/image.
 
 ## Kiểm tra
 
@@ -269,6 +276,7 @@ Các trường hợp kiểm tra chấp nhận thủ công:
 | `FILEMANAGER_MIN_FREE_SPACE` | `67108864` | Dung lượng phải còn lại sau upload/giải nén |
 | `FILEMANAGER_SESSION_IDLE` | `1800` | Thời gian idle tối đa của phiên, đơn vị giây |
 | `FILEMANAGER_MOUNTS` | tự dò trên Linux; QNX chỉ dùng root | Danh sách mount points phân cách bằng `:` (QNX nên đặt tường minh) |
+| `FILEMANAGER_PROTECTED_PROCESSES` | `core_r,core-r,corer` | Danh sách chuỗi tên process phân cách bằng dấu phẩy; tiến trình khớp sẽ không có thao tác điều khiển |
 | `FILEMANAGER_TMP` | thư mục tạm mặc định của Python | Thư mục writable dùng để spool upload và tạo ZIP; trên thiết bị nên đặt nơi có dung lượng phù hợp |
 
 Đặt `FILEMANAGER_MIN_FREE_SPACE=0` nếu muốn tắt phần dung lượng dự phòng. Không nên đặt quá cao trên thiết bị có phân vùng nhỏ; giá trị này vừa tạo cảnh báo trên trang dung lượng vừa chặn upload/giải nén có thể làm dung lượng trống giảm xuống dưới ngưỡng.
