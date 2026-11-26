@@ -12,7 +12,7 @@
 - Tìm kiếm đệ quy theo tên, loại, dung lượng và ngày sửa đổi; kết quả tối đa 1.000 mục.
 - Tiến độ, tốc độ và nút hủy khi tải lên; trình duyệt quản lý tiến độ/hủy tải xuống. Kiểm tra dung lượng trống trước khi ghi và cảnh báo phân vùng gần mức dự phòng.
 - Thống kê dung lượng đã dùng/còn trống trên các phân vùng gắn kết.
-- Trang **Bản đồ & nhật ký** chỉ đọc tile DTED `.dt2` và log CSV/JSON/JSONL/text; vẽ cao độ offline, phủ tọa độ đã ghi, phát lại theo thứ tự, tra ô lưới gần nhất và so sánh cao độ log với bản đồ.
+- Trang **Bản đồ & nhật ký** chỉ đọc tile DTED `.dt2` và log CSV/JSON/JSONL/text; hỗ trợ lớp phủ nhiều quỹ đạo, biểu đồ/statistics, phân tích AGL, tìm tile theo tọa độ và xuất báo cáo.
 - Tài khoản `read` (chỉ xem/tải), `write` (thêm/sửa/xóa/chmod), `admin` (toàn quyền và quản lý người dùng/nhật ký).
 - Nhật ký đăng nhập/thất bại, tải lên, CRUD, chmod và quản lý tài khoản; lưu SQLite, hiển thị 500 sự kiện gần nhất.
 - Phiên được thu hồi phía máy chủ khi hết hạn không hoạt động; admin xem/thu hồi phiên khác và tải/khôi phục bản sao lưu tài khoản + nhật ký.
@@ -125,13 +125,17 @@ WantedBy=multi-user.target
 
 Tùy chọn độ rộng cột được lưu trong trình duyệt đang dùng. Copy/Cut clipboard cũng chỉ nằm trong giao diện trình duyệt hiện tại.
 
-### Bản đồ và log (chỉ đọc)
+### Bản đồ và log
 
 Vào **Bản đồ & nhật ký**, chọn tile `.dt2` và tệp log. Trình đọc hỗ trợ định dạng DTED UHL/Data Record; phần mở rộng `.dt2` tự nó chưa đủ xác nhận định dạng. Tile mẫu `Map/n22_e105_1arc_v3.dt2` có gốc 22°N, 105°E, lưới 3601×3601 với khoảng cách 1 giây cung, phủ tới 23°N, 106°E. Mỗi profile là một kinh độ; cao độ trong profile đi từ Nam lên Bắc như `Map/read_map.cpp`. Để tải nhanh, ảnh hiển thị được giảm mẫu tối đa 256×256; bấm lên ảnh vẫn tra ô gần nhất trên lưới gốc 3601×3601. Bản đồ được tô màu theo mẫu cao độ, hiển thị bước lưới và cảnh báo checksum của các profile đã lấy mẫu. Chọn dòng log để đối chiếu tọa độ/cao độ ghi nhận với tile đang mở. DTED lưu cao độ signed-magnitude big-endian; giá trị NoData là `0xFFFF`. Chênh cao là phép trừ số học; chỉ diễn giải khi hai nguồn dùng cùng đơn vị và mốc cao độ. Thanh thời gian và **Phát lại** duyệt log theo timestamp; chọn hệ số tốc độ từ `0,5×` đến `20×` cạnh nút phát. Các dòng thiếu timestamp dùng khoảng mặc định 5 giây trước khi áp dụng hệ số. Bộ lọc hỗ trợ từ khóa/ngày và **Xuất CSV** tải các bản ghi đang lọc.
 
-Log có thể là CSV, JSON array/object, JSON Lines, hoặc văn bản từng dòng. Trình đọc nhận các tên trường phổ biến như `latitude`/`lat`, `longitude`/`lon`/`lng`, `altitude`/`elevation`/`height` và `timestamp`/`time`; trường tọa độ trong object con `position`, `coordinates` hoặc `location` cũng được nhận. Dòng không có tọa độ vẫn xuất hiện trong bảng nhưng không được vẽ trên bản đồ. File log bị giới hạn 5.000 bản ghi trả về và tối đa `FILEMANAGER_MAX_GEO_FILE` byte.
+Log có thể là CSV, JSON array/object, JSON Lines, hoặc văn bản từng dòng. Trình đọc nhận các tên trường phổ biến như `latitude`/`lat`, `longitude`/`lon`/`lng`, `altitude`/`elevation`/`height`, `timestamp`/`time` và `speed_mps`/`groundspeed`; tốc độ được hiểu là m/s. Trường tọa độ trong object con `position`, `coordinates` hoặc `location` cũng được nhận. Dòng không có tọa độ vẫn xuất hiện trong bảng nhưng không được vẽ trên bản đồ. File log bị giới hạn 5.000 bản ghi trả về và tối đa `FILEMANAGER_MAX_GEO_FILE` byte.
 
-Các màn hình này chỉ đọc dữ liệu đã có và không gửi lệnh hoặc thay đổi giao tiếp/core R. Đặt `FILEMANAGER_GEO_ROOT` vào thư mục bản đồ/log bên trong `FILEMANAGER_ROOT` nếu không muốn quét toàn bộ vùng quản lý. Thư mục `Map` kèm tile mẫu, tài liệu định dạng và `read_map.cpp` làm tài liệu tham chiếu. Parser web đọc trực tiếp DTED chuẩn, không gọi hay phụ thuộc chương trình C++; tile theo định dạng riêng sẽ được liệt kê kèm lỗi cho đến khi có đặc tả parser tương ứng.
+Có thể thêm tối đa bốn quỹ đạo log làm lớp phủ để so sánh. Biểu đồ đặt cao độ bay và cao độ DTED trên cùng trục mét; vùng tô giữa hai đường biểu thị chênh cao AGL. Biểu đồ tốc độ được tách riêng. Dùng chế độ **Chọn vùng** rồi kéo một khung trên biểu đồ để zoom cả trục thời gian và cao độ; chọn **Di chuyển** rồi kéo ngang/dọc để pan. Các nút +/− và đặt lại vẫn dùng được; cả hai biểu đồ dùng chung cửa sổ thời gian và nhấn để chọn thời điểm trên bản đồ. Phần thống kê tính quãng đường, thời lượng, tốc độ, cao độ và số điểm ngoài tile. **Phân tích theo địa hình** tra cao độ DTED theo lô, tính AGL (cao độ log trừ cao độ địa hình), tô đỏ các điểm thấp hơn ngưỡng đặt trong giao diện và bổ sung kết quả vào CSV. Danh mục tile báo các cặp vùng chồng diện tích và dải trống trong khung bao; nhập tọa độ để tìm tile chứa điểm. **Báo cáo HTML** tải một trang độc lập gồm thống kê, hình bản đồ/biểu đồ và các điểm dưới ngưỡng. Các kết quả chỉ phục vụ xem xét log, không phải cảnh báo bay thời gian thực.
+
+Đặt `FILEMANAGER_GEO_ROOT` vào thư mục bản đồ/log bên trong `FILEMANAGER_ROOT` nếu không muốn quét toàn bộ vùng quản lý. Thư mục `Map` kèm tile mẫu, tài liệu định dạng và `read_map.cpp` làm tài liệu tham chiếu. Parser web đọc trực tiếp DTED chuẩn, không gọi hay phụ thuộc chương trình C++; tile theo định dạng riêng sẽ được liệt kê kèm lỗi cho đến khi có đặc tả parser tương ứng.
+
+Các tệp `Map/n22_e106_synthetic.dt2`, `n22_e107_synthetic.dt2`, `n22_e108_synthetic.dt2` và `uav_route_4_tiles_simulation.csv` được tạo để thử giao diện. Ba tile mới là địa hình tổng hợp nối mép từ tile gốc, **không phải dữ liệu địa hình thực**; log ghi tốc độ khoảng 20 m/s và AGL biến thiên quanh 100 m, có `event=SIMULATED_SYNTHETIC_TERRAIN_ROUTE` để nhận diện là mô phỏng.
 
 `FILEMANAGER_ROOT` là ranh giới bảo mật ứng dụng. Đường dẫn `..`, đường dẫn tuyệt đối và symbolic link bị từ chối; thư mục dữ liệu ứng dụng không được liệt kê. Tệp hệ thống vẫn chịu kiểm soát quyền Unix của user chạy dịch vụ. Không cấu hình root là `/` nếu không thực sự cần thiết.
 
@@ -195,7 +199,7 @@ Truy cập `https://<IP-hoac-hostname-KR260>:8443`; trình duyệt cần tin c�
 
 #### 4. Thử nghiệm trên target
 
-Thực hiện các ca TC-01 đến TC-27 bên dưới với dữ liệu thử, đặc biệt TC-04/05/06/08/10/12/13/18/26/27. Xác nhận các phân vùng trong `FILEMANAGER_MOUNTS` đúng với mount thật, upload lớn không làm đầy RAM, database vẫn tồn tại sau reboot, quyền file đúng với filesystem đang dùng, và truy cập HTTPS được từ máy khách. Kết quả trên Linux chỉ kiểm chứng chức năng chung; chỉ ghi nhận tương thích QNX sau khi các ca này chạy đạt trên chính board/image.
+Thực hiện các ca TC-01 đến TC-36 bên dưới với dữ liệu thử, đặc biệt TC-04/05/06/08/10/12/13/18/26–36. Xác nhận các phân vùng trong `FILEMANAGER_MOUNTS` đúng với mount thật, upload lớn không làm đầy RAM, database vẫn tồn tại sau reboot, quyền file đúng với filesystem đang dùng, và truy cập HTTPS được từ máy khách. Kết quả trên Linux chỉ kiểm chứng chức năng chung; chỉ ghi nhận tương thích QNX sau khi các ca này chạy đạt trên chính board/image.
 
 ## Kiểm tra
 
@@ -235,9 +239,16 @@ Các trường hợp kiểm tra chấp nhận thủ công:
 | TC-24 | Thêm nhiều dòng đến cuối vùng nhìn, sau đó Undo/Redo bằng nút và phím tắt | Editor tự cuộn theo caret; undo/redo khôi phục chính xác nội dung và vị trí chọn |
 | TC-25 | Đổi quyền bằng các danh sách chọn và bằng ô số bát phân | Các lựa chọn cập nhật đúng ba chữ số; nhập số cập nhật lại các danh sách; quyền tệp khớp giá trị đã chọn |
 | TC-26 | Mở tile DTED `.dt2`, bấm lấy độ cao và chọn điểm tọa độ từ log | Phạm vi/độ phân giải hiển thị; NoData được nhận diện; tọa độ log trong tile được phủ và chênh cao tính đúng |
-| TC-27 | Đọc CSV/JSON/JSONL/log, lọc ngày/từ khóa, phát lại và xuất CSV | Trường tọa độ/thời gian phổ biến được chuẩn hóa; giới hạn 5.000 bản ghi được báo; không ghi file hoặc gửi lệnh tới core R |
+| TC-27 | Đọc CSV/JSON/JSONL/log, lọc ngày/từ khóa, phát lại và xuất CSV | Trường tọa độ/thời gian phổ biến được chuẩn hóa; giới hạn 5.000 bản ghi được báo |
 | TC-28 | Mở editor, kéo góc dưới phải theo chiều ngang và dọc | Cửa sổ đổi kích thước, vùng soạn thảo tự co giãn và vẫn cuộn được |
 | TC-29 | Phát log có timestamp với nhiều hệ số tốc độ, thay đổi hệ số khi đang phát và tua thanh thời gian | Khoảng cách thời gian phát thay đổi theo hệ số; đổi tốc độ có hiệu lực ngay; tua dừng phát để chọn đúng bản ghi |
+| TC-30 | Thêm nhiều log làm lớp phủ, gỡ từng lớp và xóa toàn bộ | Tối đa bốn quỹ đạo phụ có màu phân biệt; đường đi của log đang phát vẫn được nhận biết |
+| TC-31 | Xem biểu đồ, nhấn vào các thời điểm và xem thống kê | Biểu đồ cao độ/tốc độ di chuyển con trỏ thời gian; quãng đường, thời lượng, tốc độ và cao độ khớp với log |
+| TC-32 | Phân tích AGL với ngưỡng khác nhau | Cao độ địa hình được tra theo lô; AGL và số điểm dưới ngưỡng cập nhật đúng; các điểm cảnh báo được đánh dấu trên bảng/bản đồ |
+| TC-33 | Nhập tọa độ trong tile, giữa vùng chồng tile và trong dải trống | Tile chứa tọa độ được liệt kê; danh mục báo đúng cặp tile chồng diện tích và vùng trống trong khung bao |
+| TC-34 | Xuất báo cáo HTML và CSV sau phân tích | Báo cáo mở độc lập, gồm bản đồ/biểu đồ/thống kê/điểm thấp; CSV có thêm terrain elevation, AGL và cờ dưới ngưỡng |
+| TC-35 | Phân tích địa hình rồi kéo chọn vùng và pan ngang/dọc trên hai biểu đồ | Cao độ bay và DTED dùng cùng trục; vùng chênh AGL hiển thị; biểu đồ tốc độ tách riêng; kéo chọn phóng đúng vùng, pan di chuyển cửa sổ, hai biểu đồ giữ chung thời gian và reset trả về toàn bộ log |
+| TC-36 | Dùng chuột hoặc cảm ứng kéo chọn vùng, pan, đổi sang biểu đồ còn lại rồi reset | Khung chọn theo con trỏ mượt; pan ngang/dọc; thời gian đồng bộ giữa hai biểu đồ; nhấn điểm vẫn chọn đúng bản ghi; reset trả toàn bộ trục về mặc định |
 
 ## Cấu hình
 

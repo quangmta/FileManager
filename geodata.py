@@ -136,6 +136,35 @@ def dted_elevation(path, latitude, longitude, max_bytes):
     }
 
 
+def dted_elevations(path, points, max_bytes):
+    """Look up many coordinates while reading each requested longitude profile once."""
+    header = dted_header(path, max_bytes)
+    results = [{'index': index, 'elevation_m': None, 'checksum_valid': None} for index in range(len(points))]
+    profiles = {}
+    for index, point in enumerate(points):
+        if not isinstance(point, dict):
+            continue
+        latitude = _float(point.get('latitude'), -90, 90)
+        longitude = _float(point.get('longitude'), -180, 180)
+        if latitude is None or longitude is None:
+            continue
+        if not (header['min_latitude'] <= latitude <= header['max_latitude'] and header['min_longitude'] <= longitude <= header['max_longitude']):
+            continue
+        row = round((latitude - header['origin_latitude']) / header['latitude_step'])
+        column = round((longitude - header['origin_longitude']) / header['longitude_step'])
+        profiles.setdefault(column, []).append((index, row))
+    with Path(path).open('rb') as stream:
+        for column, requests in profiles.items():
+            values, checksum_ok = _read_column(stream, header, column)
+            for index, row in requests:
+                results[index] = {
+                    'index': index,
+                    'elevation_m': values[row],
+                    'checksum_valid': checksum_ok,
+                }
+    return results
+
+
 def _field(data, aliases):
     normalized = {re.sub(r'[^a-z0-9]', '', str(key).casefold()): value for key, value in data.items()}
     for alias in aliases:
@@ -177,6 +206,7 @@ def _record(data, index, raw=''):
     lat = _float(_field(data, ('latitude','lat','gps_latitude','gps_lat')), -90, 90)
     lon = _float(_field(data, ('longitude','lon','lng','gps_longitude','gps_lon')), -180, 180)
     altitude = _float(_field(data, ('altitude','elevation','height','alt','z')), -12000, 100000)
+    speed = _float(_field(data, ('speed_mps','ground_speed_mps','groundspeed','speed','velocity')), 0, 1000)
     time_value = _field(data, ('timestamp','datetime','date_time','recorded_at','time','ts'))
     message = _field(data, ('message','msg','event','type','command','status','name'))
     if not raw:
@@ -186,7 +216,7 @@ def _record(data, index, raw=''):
             raw = str(data)
     return {
         'index': index, 'timestamp': _timestamp(time_value), 'latitude': lat, 'longitude': lon,
-        'altitude_m': altitude, 'message': str(message if message is not None else '')[:500],
+        'altitude_m': altitude, 'speed_mps': speed, 'message': str(message if message is not None else '')[:500],
         'raw': str(raw)[:1200],
     }
 

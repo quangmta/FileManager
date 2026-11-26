@@ -7,7 +7,7 @@ from pathlib import Path, PurePosixPath
 from flask import Flask, abort, jsonify, request, send_file, session
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.exceptions import HTTPException
-from geodata import GeoDataError, dted_elevation, dted_header, dted_preview, parse_log
+from geodata import GeoDataError, dted_elevation, dted_elevations, dted_header, dted_preview, parse_log
 
 BASE=Path(__file__).resolve().parent
 DB=Path(os.environ.get('FILEMANAGER_DB',BASE/'.filescope/filemanager.sqlite3'))
@@ -278,6 +278,20 @@ def geo_elevation():
     except GeoDataError as error:abort(400,str(error))
     except OSError as error:abort(400,f'Không đọc được độ cao: {error.strerror or error}')
     return jsonify(result)
+
+@app.post('/api/geo/elevations')
+@require()
+@csrf
+def geo_elevations():
+    data=request.get_json(silent=True) or {}
+    points=data.get('points')
+    if not isinstance(points,list) or len(points)>5000:abort(400,'Danh sách tọa độ phải là mảng tối đa 5.000 điểm')
+    path=geo_file(data.get('path',''),{'.dt2'})
+    try:results=dted_elevations(path,points,MAX_GEO_FILE_BYTES)
+    except GeoDataError as error:abort(400,str(error))
+    except OSError as error:abort(400,f'Không đọc được độ cao: {error.strerror or error}')
+    audit('geo_elevation_batch',rel(path),f'points={len(points)}')
+    return jsonify(results=results)
 
 GEO_LOG_EXTENSIONS={'.csv','.json','.jsonl','.log','.txt'}
 @app.get('/api/geo/log-files')
