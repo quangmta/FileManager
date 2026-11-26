@@ -1,6 +1,100 @@
 """System API routes."""
 import app as core
 from app import *
+import subprocess
+
+QNX_PIDIN=os.environ.get('FILEMANAGER_QNX_PIDIN','pidin')
+QNX_TOP=os.environ.get('FILEMANAGER_QNX_TOP','top')
+
+def _qnx_command(command, *args):
+    try:
+        result=subprocess.run([command,*args],capture_output=True,text=True,timeout=5,check=False)
+    except (OSError,subprocess.TimeoutExpired) as error:
+        abort(503,f'Không chạy được công cụ QNX {Path(command).name}: {error}')
+    if result.returncode:
+        abort(503,f'Công cụ QNX {Path(command).name} trả mã lỗi {result.returncode}.')
+    return result.stdout
+
+def _qnx_memory_bytes(value, unit):
+    scale={'K':1024,'M':1024**2,'G':1024**3}.get(unit.upper())
+    return int(float(value)*scale) if scale else None
+
+def _qnx_memory_snapshot(top_output=''):
+    info=_qnx_command(QNX_PIDIN,'info')
+    cpu_count=len(re.findall(r'^\s*Processor\d+:',info,re.M))
+    match=re.search(r'FreeMem:\s*([\d.]+)\s*([KMG])B\s*/\s*([\d.]+)\s*([KMG])B',info,re.I)
+    if match:
+        available=_qnx_memory_bytes(match.group(1),match.group(2))
+        total=_qnx_memory_bytes(match.group(3),match.group(4))
+    else:
+        match=re.search(r'Memory:\s*([\d.]+)\s*([KMG])\s+total,\s*([\d.]+)\s*([KMG])\s+avail',top_output,re.I)
+        if not match:abort(503,'Không phân tích được tổng/khả dụng RAM từ pidin info hoặc top.')
+        total=_qnx_memory_bytes(match.group(1),match.group(2))
+        available=_qnx_memory_bytes(match.group(3),match.group(4))
+    if not total or available is None:abort(503,'QNX trả số liệu bộ nhớ không hợp lệ.')
+    available=min(total,available)
+    used=max(0,total-available)
+    return {'total':total,'available':available,'used':used,'cache':None,
+            'percent':round(used/total*100,1),'cpu_count':max(1,cpu_count)}
+
+def _qnx_cpu_snapshot(top_output):
+    cpus=[]
+    for line in top_output.splitlines():
+        match=re.match(r'^\s*CPU\s+(\d+):\s+(OFFL|[\d.]+%)',line,re.I)
+        if not match:continue
+        offline=match.group(2).upper()=='OFFL'
+        idle=100.0 if offline else float(match.group(2).rstrip('%'))
+        cpus.append({'name':f'cpu{match.group(1)}','percent':max(0.0,min(100.0,100.0-idle))})
+    if cpus:return cpus
+    info=_qnx_command(QNX_PIDIN,'info')
+    count=len(re.findall(r'^\s*Processor\d+:',info,re.M))
+    return [{'name':f'cpu{index}','percent':0.0} for index in range(count)]
+
+def _qnx_process_snapshot(total_memory):
+    output=_qnx_command(QNX_PIDIN,'-F','%a %N %U %u %v')
+    page_size=4096
+    try:page_size=int(os.sysconf('SC_PAGE_SIZE'))
+    except (AttributeError,ValueError,OSError):pass
+    sampled_at=time.monotonic();processes=[]
+    for line in output.splitlines():
+        fields=line.split()
+        if len(fields)<5:continue
+        try:
+            pid=int(fields[0]);uid=int(fields[2],0);user_ticks=int(fields[3],0);system_ticks=int(fields[4],0)
+        except ValueError:continue
+        if pid<1:continue
+        rss_pages=0
+        try:
+            vmstat=(Path('/proc')/str(pid)/'vmstat').read_text(encoding='ascii',errors='replace')
+            rss_match=re.search(r'^as_stats\.rss=(0x[0-9a-f]+|\d+)',vmstat,re.M|re.I)
+            if rss_match:rss_pages=int(rss_match.group(1),0)
+        except (OSError,ValueError):pass
+        try:
+            import pwd
+            username=pwd.getpwuid(uid).pw_name
+        except (ImportError,KeyError):username=str(uid)
+        memory_bytes=rss_pages*page_size
+        name=fields[1]
+        processes.append({'pid':pid,'name':name,'user':username,'uid':uid,'state':'?',
+            'process_group':pid,'cpu_ticks':user_ticks+system_ticks,'start_time':0,
+            'memory_bytes':memory_bytes,'memory_percent':round(memory_bytes/total_memory*100,2) if total_memory else 0,
+            'sampled_at':sampled_at,'can_control':False,
+            'control_reason':'Điều khiển tiến trình QNX chưa được bật'})
+    return processes
+
+def _qnx_system_processes():
+    memory=_qnx_memory_snapshot()
+    processes=_qnx_process_snapshot(memory['total'])
+    return jsonify(processes=processes,total_memory=memory['total'],clock_ticks=1_000_000_000,
+                   cpu_count=memory['cpu_count'],poll_interval_ms=5000,sampled_at=time.monotonic())
+
+def _qnx_system_resources():
+    top_output=_qnx_command(QNX_TOP,'-b','-i','1','-D','1')
+    memory=_qnx_memory_snapshot(top_output)
+    cpus=_qnx_cpu_snapshot(top_output)
+    return jsonify(cpus=cpus,memory=memory,
+        swap={'total':0,'used':0,'free':0,'percent':0},interfaces=[],network_supported=False,
+        poll_interval_ms=5000,sampled_at=time.monotonic())
 
 @app.get('/api/disk')
 @require()
@@ -31,7 +125,7 @@ def disk():
 
 def linux_procfs_required():
     if platform.system()!='Linux' or not Path('/proc/stat').is_file():
-        abort(501,'Giám sát tiến trình hiện cần Linux với procfs.')
+        abort(501,'Giám sát tiến trình cần Linux hoặc QNX có pidin, top và procfs.')
 
 def process_snapshot(pid):
     proc=Path('/proc')/str(pid)
@@ -58,6 +152,7 @@ def process_snapshot(pid):
 @app.get('/api/system/processes')
 @require()
 def system_processes():
+    if platform.system().upper()=='QNX':return _qnx_system_processes()
     linux_procfs_required()
     try:meminfo={line.split(':',1)[0]:int(line.split(':',1)[1].strip().split()[0])*1024 for line in Path('/proc/meminfo').read_text().splitlines() if ':' in line}
     except (OSError,ValueError):meminfo={}
@@ -86,6 +181,7 @@ def system_processes():
 @app.get('/api/system/resources')
 @require()
 def system_resources():
+    if platform.system().upper()=='QNX':return _qnx_system_resources()
     linux_procfs_required()
     cpus=[]
     try:

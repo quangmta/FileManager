@@ -11,7 +11,7 @@
 - Tải thư mục xuống dạng ZIP; tải ZIP lên và giải nén an toàn trong thư mục đang mở, có giới hạn số mục/kích thước, chống path traversal và xung đột tên.
 - Tìm kiếm đệ quy theo tên, loại, dung lượng và ngày sửa đổi; kết quả tối đa 1.000 mục.
 - Tiến độ, tốc độ và nút hủy khi tải lên; trình duyệt quản lý tiến độ/hủy tải xuống. Kiểm tra dung lượng trống trước khi ghi và cảnh báo phân vùng gần mức dự phòng.
-- **Giám sát hệ thống trên Linux**: danh sách tiến trình, CPU/RAM/mạng theo thời gian thực, tín hiệu quản lý tiến trình có bảo vệ và tab dung lượng các phân vùng.
+- **Giám sát hệ thống**: Linux lấy số liệu từ procfs; QNX lấy CPU/RAM/tiến trình từ `top`, `pidin` và procfs QNX khi các thành phần này có trong image. Tab mạng và điều khiển tiến trình chỉ bật trên Linux.
 - Trang **Bản đồ & nhật ký** chỉ đọc tile DTED `.dt2` và log CSV/JSON/JSONL/text; hỗ trợ lớp phủ nhiều quỹ đạo, biểu đồ/statistics, phân tích AGL, tìm tile theo tọa độ và xuất báo cáo.
 - Tài khoản `read` (chỉ xem/tải), `write` (thêm/sửa/xóa/chmod), `admin` (toàn quyền và quản lý người dùng/nhật ký).
 - Nhật ký đăng nhập/thất bại, tải lên, CRUD, chmod và quản lý tài khoản; lưu SQLite, hiển thị 500 sự kiện gần nhất.
@@ -128,7 +128,7 @@ WantedBy=multi-user.target
 8. Admin vào **Quản trị** để tạo tài khoản `read`, `write`, `admin`, xem nhật ký/phiên và thu hồi phiên khác. Phiên tự hết hạn sau `FILEMANAGER_SESSION_IDLE` giây không hoạt động (mặc định 30 phút); phiên hiện tại được đánh dấu và không thể thu hồi từ chính nó.
 9. Trong **Sao lưu & khôi phục**, tải JSON backup trước khi khôi phục. Backup chứa tài khoản (bao gồm password hash) và tối đa 100.000 sự kiện audit, kèm cờ nếu audit bị cắt bớt. Khôi phục thay thế danh sách tài khoản và audit, yêu cầu xác nhận và giữ phiên admin hiện tại nếu tài khoản đó có trong backup. Thông tin root/giới hạn trong backup chỉ để tham khảo; khôi phục không đổi biến môi trường, secret hay nội dung file. Giữ file backup ở nơi được bảo vệ như database.
 10. Vào **Giám sát hệ thống → Dung lượng ổ đĩa** để xem phân vùng, phần trăm dùng và dung lượng còn trống. Cảnh báo hiện trên phân vùng có mức trống thấp hơn ngưỡng dự phòng.
-11. Trong **Giám sát hệ thống**, tab **Tiến trình** hiển thị tên, user, PID, CPU và bộ nhớ; `% CPU tổng` là phần trăm trên tổng năng lực các CPU logic của máy nên tối đa 100%. Tab **Tài nguyên** tự làm mới mức CPU từng lõi, RAM và lưu lượng mạng kèm biểu đồ. Dung lượng RAM/swap dùng GB thập phân (1 GB = 1.000.000.000 byte) để khớp cách GNOME System Monitor hiển thị; số liệu nguồn Linux đọc từ `/proc` theo byte. Admin chọn thao tác **Tạm dừng**, **Tiếp tục**, **Kết thúc** (TERM) hoặc **Buộc dừng** (KILL) rồi **Thực thi**. Kết thúc/buộc dừng cần xác nhận. PID 1, tiến trình root, tiến trình cùng process group với server và tên được bảo vệ không thể điều khiển. Dùng `FILEMANAGER_PROTECTED_PROCESSES` để khai báo thêm tên tiến trình cần bảo vệ. Các tab Tiến trình/Tài nguyên cần Linux `/proc`; QNX hiện chỉ hỗ trợ tab dung lượng qua `FILEMANAGER_MOUNTS`.
+11. Trong **Giám sát hệ thống**, tab **Tiến trình** hiển thị tên, user, PID, CPU và bộ nhớ; `% CPU tổng` là phần trăm trên tổng năng lực các CPU logic của máy nên tối đa 100%. Linux lấy mẫu từ `/proc`; QNX dùng `pidin`, `top` và `/proc/<pid>/vmstat`, làm mới mỗi 5 giây. Trên QNX, tiến trình chỉ xem được, không có nút gửi tín hiệu; tab mạng bị ẩn và swap không được báo cáo. Bộ nhớ tiến trình QNX là RSS tính từ số trang trong `vmstat`; quyền truy cập procfs có thể khiến một số tiến trình trả về 0 byte. RAM/swap Linux dùng GB thập phân (1 GB = 1.000.000.000 byte); RAM QNX dùng giá trị `FreeMem` từ `pidin info`. Trên Linux, admin chọn **Tạm dừng**, **Tiếp tục**, **Kết thúc** (TERM) hoặc **Buộc dừng** (KILL) rồi **Thực thi**. Kết thúc/buộc dừng cần xác nhận. PID 1, tiến trình root, tiến trình cùng process group với server và tên được bảo vệ không thể điều khiển. Dùng `FILEMANAGER_PROTECTED_PROCESSES` để khai báo thêm tên tiến trình cần bảo vệ.
 
 Tùy chọn độ rộng cột được lưu trong trình duyệt đang dùng. Copy/Cut clipboard cũng chỉ nằm trong giao diện trình duyệt hiện tại.
 
@@ -148,7 +148,7 @@ Các tệp `Map/n22_e106_synthetic.dt2`, `n22_e107_synthetic.dt2`, `n22_e108_syn
 
 ### Triển khai trên QNX/KR260
 
-Ứng dụng không gọi lệnh Linux như `df`, `stat`, `zip`, không đọc `/proc/mounts` trên QNX và không phụ thuộc systemd. Python/Flask, SQLite, ZIP, TLS và các API filesystem phải có sẵn trong image target. Đây là hướng dẫn porting: cần build và kiểm chứng trên đúng image/BSP KR260 trước khi đưa vào sử dụng; kiểm tra trên Ubuntu không chứng minh ABI hoặc driver QNX tương thích.
+Ứng dụng không gọi lệnh Linux như `df`, `stat`, `zip`, không đọc `/proc/mounts` trên QNX và không phụ thuộc systemd. Module giám sát QNX cần có lệnh `pidin`, `top` và procfs QNX (`/proc/vm/stats`, `/proc/<pid>/vmstat`) trong image. Tài khoản dịch vụ cần quyền truy vấn tiến trình QNX phù hợp; nếu thiếu quyền, thông tin RAM hệ thống vẫn có thể hiện nhưng RSS của tiến trình có thể không đọc được. Python/Flask, SQLite, ZIP, TLS và các API filesystem cũng phải có sẵn trong image target. Đây là hướng dẫn porting: cần build và kiểm chứng trên đúng image/BSP KR260 trước khi đưa vào sử dụng; kiểm tra trên Ubuntu không chứng minh ABI hoặc driver QNX tương thích.
 
 #### 1. Kiểm tra image và Python
 
@@ -158,6 +158,11 @@ Các tệp `Map/n22_e106_synthetic.dt2`, `n22_e107_synthetic.dt2`, `n22_e108_syn
 uname -a
 python3.11 -V
 python3.11 -c 'import ssl, sqlite3, zlib, zipfile; print(ssl.OPENSSL_VERSION)'
+pidin info
+pidin -F "%a %N %U %u %v"
+top -b -i 1 -D 1
+cat /proc/vm/stats
+cat /proc/1/vmstat
 ```
 
 Đừng cài wheel hoặc thư viện native build cho Ubuntu lên QNX. Cần dùng package Python target được build cho đúng QNX SDP/architecture, hoặc build/cross-compile từ QNX SDP host tools. Tài liệu QNX hiện có Python 3.11 cho SDP 7.1; ghi chú SDP 8.0.3 có Python 3.13. Vì vậy Python 3.11 trên một image SDP 8.0/KR260 có thể là bản tùy biến; phải xác nhận nguồn build, ABI và tương thích package. Đóng gói các dependency của `requirements.txt` (Flask, Werkzeug và dependency gián tiếp) cho đúng target. `gunicorn` trong requirements chỉ dành cho Linux; không dùng trên QNX nếu chưa port và kiểm thử riêng.
@@ -168,7 +173,7 @@ Chép mã nguồn (`app.py`, `static/`, `tools/`) và Python packages tương th
 python3.11 tools/check_qnx_runtime.py
 ```
 
-Checker cần kết thúc mã 0. Nó kiểm tra module, SQLite, ZIP Deflate, TLS context, loopback socket và filesystem cơ bản; không kiểm tra BSP, certificate chain, network từ xa, độ bền ổ đĩa hay khả năng phục vụ tải đồng thời.
+Checker cần kết thúc mã 0. Nó kiểm tra module, SQLite, ZIP Deflate, TLS context, loopback socket và filesystem cơ bản; trên QNX nó còn kiểm tra `pidin`, `top` và các file vmstat cần cho monitor. Checker không xác nhận format output của BSP, certificate chain, network từ xa, độ bền ổ đĩa hay tải đồng thời.
 
 #### 2. Chọn thư mục và quyền ghi
 
@@ -206,7 +211,7 @@ Truy cập `https://<IP-hoac-hostname-KR260>:8443`; trình duyệt cần tin c�
 
 #### 4. Thử nghiệm trên target
 
-Thực hiện các ca TC-01 đến TC-36 bên dưới với dữ liệu thử, đặc biệt TC-04/05/06/08/10/12/13/18/26–36. Trên QNX, bỏ qua các ca giám sát cần Linux `/proc` và xác nhận riêng tab dung lượng với mount đã cấu hình. Xác nhận các phân vùng trong `FILEMANAGER_MOUNTS` đúng với mount thật, upload lớn không làm đầy RAM, database vẫn tồn tại sau reboot, quyền file đúng với filesystem đang dùng, và truy cập HTTPS được từ máy khách. Kết quả trên Linux chỉ kiểm chứng chức năng chung; chỉ ghi nhận tương thích QNX sau khi các ca này chạy đạt trên chính board/image.
+Thực hiện các ca TC-01 đến TC-37 bên dưới với dữ liệu thử, đặc biệt TC-04/05/06/08/10/12/13/18/26–37. Trên QNX xác nhận riêng giám sát bằng TC-37, các mount đã cấu hình, upload lớn không làm đầy RAM, database tồn tại sau reboot, quyền file đúng với filesystem và HTTPS truy cập được từ máy khách. Kết quả trên Linux chỉ kiểm chứng chức năng chung; chỉ ghi nhận tương thích QNX sau khi các ca này chạy đạt trên chính board/image.
 
 ## Kiểm tra
 
@@ -256,6 +261,7 @@ Các trường hợp kiểm tra chấp nhận thủ công:
 | TC-34 | Xuất báo cáo HTML và CSV sau phân tích | Báo cáo mở độc lập, gồm bản đồ/biểu đồ/thống kê/điểm thấp; CSV có thêm terrain elevation, AGL và cờ dưới ngưỡng |
 | TC-35 | Phân tích địa hình rồi kéo chọn vùng và pan ngang/dọc trên hai biểu đồ | Cao độ bay và DTED dùng cùng trục; vùng chênh AGL hiển thị; biểu đồ tốc độ tách riêng; kéo chọn phóng đúng vùng, pan di chuyển cửa sổ, hai biểu đồ giữ chung thời gian và reset trả về toàn bộ log |
 | TC-36 | Dùng chuột hoặc cảm ứng kéo chọn vùng, pan, đổi sang biểu đồ còn lại rồi reset | Khung chọn theo con trỏ mượt; pan ngang/dọc; thời gian đồng bộ giữa hai biểu đồ; nhấn điểm vẫn chọn đúng bản ghi; reset trả toàn bộ trục về mặc định |
+| TC-37 | Trên QNX, gọi `/api/system/resources` và `/api/system/processes`; so sánh với `top`/Momentics | RAM khả dụng/tổng và tải từng lõi có số liệu; tiến trình có PID, CPU delta và RSS khi quyền procfs cho phép; làm mới 5 giây; mạng bị ẩn; lệnh tín hiệu tiến trình không được phép |
 
 ## Cấu hình
 
@@ -277,6 +283,8 @@ Các trường hợp kiểm tra chấp nhận thủ công:
 | `FILEMANAGER_SESSION_IDLE` | `1800` | Thời gian idle tối đa của phiên, đơn vị giây |
 | `FILEMANAGER_MOUNTS` | tự dò trên Linux; QNX chỉ dùng root | Danh sách mount points phân cách bằng `:` (QNX nên đặt tường minh) |
 | `FILEMANAGER_PROTECTED_PROCESSES` | `core_r,core-r,corer` | Danh sách chuỗi tên process phân cách bằng dấu phẩy; tiến trình khớp sẽ không có thao tác điều khiển |
+| `FILEMANAGER_QNX_PIDIN` | `pidin` | Đường dẫn/tên lệnh QNX dùng đọc RAM và thời gian CPU tiến trình |
+| `FILEMANAGER_QNX_TOP` | `top` | Đường dẫn/tên lệnh QNX dùng đọc CPU từng lõi và RAM khả dụng |
 | `FILEMANAGER_TMP` | thư mục tạm mặc định của Python | Thư mục writable dùng để spool upload và tạo ZIP; trên thiết bị nên đặt nơi có dung lượng phù hợp |
 
 Đặt `FILEMANAGER_MIN_FREE_SPACE=0` nếu muốn tắt phần dung lượng dự phòng. Không nên đặt quá cao trên thiết bị có phân vùng nhỏ; giá trị này vừa tạo cảnh báo trên trang dung lượng vừa chặn upload/giải nén có thể làm dung lượng trống giảm xuống dưới ngưỡng.

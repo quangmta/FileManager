@@ -22,6 +22,15 @@ report = {
     'filesystem': {name: hasattr(os, name) for name in ('statvfs', 'walk', 'replace', 'chmod')},
     'modules': {}, 'probes': {},
 }
+if platform.system().upper() == 'QNX':
+    pidin = os.environ.get('FILEMANAGER_QNX_PIDIN', 'pidin')
+    top = os.environ.get('FILEMANAGER_QNX_TOP', 'top')
+    report['qnx_monitor'] = {
+        'pidin': shutil.which(pidin) or (pidin if Path(pidin).is_file() else None),
+        'top': shutil.which(top) or (top if Path(top).is_file() else None),
+        'system_vm_stats': Path('/proc/vm/stats').is_file(),
+        'process_vmstat': Path('/proc/1/vmstat').is_file(),
+    }
 for name in MODULES:
     try:
         module = importlib.import_module(name)
@@ -83,3 +92,8 @@ for key in ('sqlite3_runtime', 'zip_deflate_runtime', 'tls_context'):
 if missing:
     print('MISSING/FAILED: ' + ', '.join(missing), file=sys.stderr)
     raise SystemExit(1)
+if platform.system().upper() == 'QNX':
+    qnx_missing = [name for name, value in report['qnx_monitor'].items() if not value]
+    if qnx_missing:
+        print('MISSING QNX monitor prerequisites: ' + ', '.join(qnx_missing), file=sys.stderr)
+        raise SystemExit(1)

@@ -2,10 +2,16 @@ function stopMonitorPolling() {
   if(monitorPollTimer){clearInterval(monitorPollTimer);monitorPollTimer=null;}
 }
 
+function updateMonitorPollInterval(interval) {
+  if(!Number.isFinite(interval)||interval<1000||interval===monitorPollInterval)return;
+  monitorPollInterval=interval;
+  if(monitorPollTimer){clearInterval(monitorPollTimer);monitorPollTimer=setInterval(()=>{if(!document.hidden)refreshMonitorTab();},monitorPollInterval);}
+}
+
 function startMonitorPolling() {
   if(monitorPollTimer||monitorUnsupported)return;
   refreshMonitorTab();
-  monitorPollTimer=setInterval(()=>{if(!document.hidden)refreshMonitorTab();},2000);
+  monitorPollTimer=setInterval(()=>{if(!document.hidden)refreshMonitorTab();},monitorPollInterval);
 }
 
 function selectMonitorTab(tab) {
@@ -23,13 +29,14 @@ async function refreshMonitorTab() {
     if(monitorTab==='processes')await loadProcesses();
     else if(monitorTab==='resources')await loadResources();
   } catch(error) {
-    if(/procfs|chỉ cần Linux/i.test(error.message)){monitorUnsupported=true;stopMonitorPolling();$('#process-summary').textContent=error.message;$('#process-table-body').innerHTML=`<tr><td colspan="7" class="muted">${esc(error.message)}</td></tr>`;$('#resource-unavailable').textContent=error.message;$('#resource-unavailable').classList.remove('hidden');$('#resource-content').classList.add('hidden');}
+    if(/procfs|QNX|Linux/i.test(error.message)){monitorUnsupported=true;stopMonitorPolling();$('#process-summary').textContent=error.message;$('#process-table-body').innerHTML=`<tr><td colspan="7" class="muted">${esc(error.message)}</td></tr>`;$('#resource-unavailable').textContent=error.message;$('#resource-unavailable').classList.remove('hidden');$('#resource-content').classList.add('hidden');}
     else toast(error.message,true);
   }
 }
 
 async function loadProcesses(forceRender=false) {
   const data=await api('/api/system/processes'),nextSamples=new Map(),clock=data.clock_ticks||100,cpuCount=data.cpu_count||1;
+  updateMonitorPollInterval(data.poll_interval_ms);
   processRows=data.processes.map(process=>{
     const key=`${process.pid}:${process.start_time}`,previous=processSamples.get(key),elapsed=previous?process.sampled_at-previous.sampled_at:0,delta=previous?process.cpu_ticks-previous.cpu_ticks:0;
     nextSamples.set(key,{cpu_ticks:process.cpu_ticks,sampled_at:process.sampled_at});
@@ -48,7 +55,7 @@ function renderProcesses(force=false) {
     return comparison*processSort.direction||a.pid-b.pid;
   });
   $$('[data-process-sort]').forEach(button=>{const active=button.dataset.processSort===processSort.key;button.querySelector('span').textContent=active?(processSort.direction===1?'↑':'↓'):'';button.closest('th').setAttribute('aria-sort',active?(processSort.direction===1?'ascending':'descending'):'none');});
-  $('#process-summary').textContent=`${rows.length.toLocaleString()} tiến trình${me?.role==='admin'?' · số liệu tự làm mới mỗi 2 giây':' · cần quyền quản trị để điều khiển tiến trình'}`;
+  $('#process-summary').textContent=`${rows.length.toLocaleString()} tiến trình${me?.role==='admin'?` · tự làm mới mỗi ${monitorPollInterval/1000} giây`:' · cần quyền quản trị để điều khiển tiến trình'}`;
   $('#process-table-body').innerHTML=rows.map(row=>{
     const stateName=({R:'Đang chạy',S:'Ngủ',D:'Chờ I/O',T:'Tạm dừng',Z:'Đã kết thúc',I:'Chờ'})[row.state]||row.state;
     const reason=row.can_control?'':(me?.role!=='admin'?'Cần quyền quản trị viên':row.control_reason||'Không được phép điều khiển');
@@ -106,8 +113,9 @@ function renderResourceCharts() {
 
 async function loadResources() {
   const data=await api('/api/system/resources'),elapsed=data.sampled_at-(resourceSample?.sampled_at||data.sampled_at);
+  updateMonitorPollInterval(data.poll_interval_ms);
   const previousCpus=new Map((resourceSample?.cpus||[]).map(cpu=>[cpu.name,cpu.ticks]));
-  const cores=data.cpus.map(cpu=>({name:cpu.name,percent:resourceCpuPercent(cpu.ticks,previousCpus.get(cpu.name))}));
+  const cores=data.cpus.map(cpu=>({name:cpu.name,percent:Number.isFinite(cpu.percent)?Math.max(0,Math.min(100,cpu.percent)):resourceCpuPercent(cpu.ticks,previousCpus.get(cpu.name))}));
   const coreNames=new Set(cores.map(core=>core.name));
   Object.keys(resourceHistory.cores).forEach(name=>{if(!coreNames.has(name))delete resourceHistory.cores[name];});
   cores.forEach(core=>{const history=resourceHistory.cores[core.name]||(resourceHistory.cores[core.name]=[]);history.push(core.percent);if(history.length>30)history.shift();});
@@ -119,13 +127,14 @@ async function loadResources() {
   for(const key of ['memory','swap','networkDown','networkUp'])if(resourceHistory[key].length>30)resourceHistory[key].shift();
   const received=interfaces.reduce((sum,item)=>sum+item.rx_bytes,0),sent=interfaces.reduce((sum,item)=>sum+item.tx_bytes,0);
   $('#memory-detail').textContent=`${systemBytes(data.memory.used)} (${data.memory.percent.toFixed(1)}%) của ${systemBytes(data.memory.total)}`;
-  $('#memory-cache').textContent=`Cache ${systemBytes(data.memory.cache)}`;
+  $('#memory-cache').textContent=data.memory.cache===null?'Cache —':`Cache ${systemBytes(data.memory.cache)}`;
   $('#swap-detail').textContent=data.swap.total?`${systemBytes(data.swap.used)} (${data.swap.percent.toFixed(1)}%) của ${systemBytes(data.swap.total)}`:'Không có swap';
   $('#network-download').textContent=formatRate(resourceHistory.networkDown.at(-1)||0);
   $('#network-upload').textContent=formatRate(resourceHistory.networkUp.at(-1)||0);
   $('#network-received-total').textContent=`Tổng nhận ${size(received)}`;
   $('#network-sent-total').textContent=`Tổng gửi ${size(sent)}`;
   $('#network-interfaces').innerHTML=interfaces.map(item=>`<div class="network-interface"><b>${esc(item.name)}</b><span>↓ ${formatRate(item.rx_rate)}</span><span>↑ ${formatRate(item.tx_rate)}</span></div>`).join('')||'<p class="muted">Không có giao diện mạng.</p>';
+  $('#network-resource-section').classList.toggle('hidden',data.network_supported===false);
   renderResourceCharts();
 }
 
