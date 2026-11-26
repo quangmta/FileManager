@@ -41,7 +41,7 @@ async function loadProcesses(forceRender=false) {
     const key=`${process.pid}:${process.start_time}`,previous=processSamples.get(key),elapsed=previous?process.sampled_at-previous.sampled_at:0,delta=previous?process.cpu_ticks-previous.cpu_ticks:0;
     nextSamples.set(key,{cpu_ticks:process.cpu_ticks,sampled_at:process.sampled_at});
     // Normalize one-core CPU usage to the total logical CPU capacity of the machine.
-    const cpuPercent=elapsed>0?delta/clock/elapsed*100/cpuCount:0;
+    const cpuPercent=Number.isFinite(process.cpu_percent)?process.cpu_percent:(elapsed>0?delta/clock/elapsed*100/cpuCount:0);
     return {...process,cpu_percent:Math.min(100,Math.max(0,cpuPercent))};
   });
   processSamples=nextSamples;renderProcesses(forceRender);

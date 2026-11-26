@@ -57,38 +57,49 @@ def _qnx_cpu_snapshot(top_output):
     count=len(re.findall(r'^\s*Processor\d+:',info,re.M))
     return [{'name':f'cpu{index}','percent':0.0} for index in range(count)]
 
+def _qnx_cpu_nanoseconds(value):
+    text=value.strip().casefold().replace(',','')
+    match=re.fullmatch(r'([+-]?[0-9]+(?:\.[0-9]+)?)\s*(ns|us|µs|ms|s)?',text)
+    if match:
+        scale={'ns':1,'us':1000,'µs':1000,'ms':1_000_000,'s':1_000_000_000,None:1}[match.group(2)]
+        return int(float(match.group(1))*scale)
+    parts=text.split(':')
+    if len(parts)==3:
+        try:return int((float(parts[0])*3600+float(parts[1])*60+float(parts[2]))*1_000_000_000)
+        except ValueError:pass
+    raise ValueError('pidin CPU time is not numeric')
+
+
 def _qnx_process_snapshot(total_memory):
     # Delimiters keep paths/names and QNX's numeric counters separate.
-    output=_qnx_command(QNX_PIDIN,'-F','%a|%N|%U|%u|%v|%J|%P')
+    output=_qnx_command(QNX_PIDIN,'-F','%a|%N|%U|%z|%J|%P')
     page_size=4096
     try:page_size=int(os.sysconf('SC_PAGE_SIZE'))
     except (AttributeError,ValueError,OSError):pass
     sampled_at=time.monotonic();by_pid={}
     state_priority={'RUNNING':5,'READY':4,'STOPPED':3,'SIGSUSPEND':2,'NANOSLEEP':1}
 
-    def add(pid,name,uid=0,user_ticks=0,system_ticks=0,state='?',process_group=None):
+    def add(pid,name,uid=0,thread_ticks=0,state='?',process_group=None):
         if pid<1 or not name:return
         row=by_pid.get(pid)
         if row is None:
-            row={'pid':pid,'name':name,'uid':uid,'user_ticks':user_ticks,'system_ticks':system_ticks,
+            row={'pid':pid,'name':name,'uid':uid,'cpu_ticks':thread_ticks,
                  'state':state,'process_group':process_group if process_group is not None else pid}
             by_pid[pid]=row
         else:
-            # pidin may emit one line per thread. %u/%v are process totals; keep the
-            # largest snapshot and summarize thread state with the most active state.
-            row['user_ticks']=max(row['user_ticks'],user_ticks)
-            row['system_ticks']=max(row['system_ticks'],system_ticks)
+            # pidin emits one row per thread; %z is that thread's accumulated CPU time.
+            row['cpu_ticks']+=thread_ticks
             if state_priority.get(state,0)>state_priority.get(row['state'],0):row['state']=state
 
     for line in output.splitlines():
         fields=line.split('|')
-        if len(fields)>=7:
+        if len(fields)>=6:
             try:
                 pid=int(fields[0].strip());uid=int(fields[2].strip(),0)
-                user_ticks=int(float(fields[3].strip()));system_ticks=int(float(fields[4].strip()))
-                process_group=int(fields[6].strip(),0)
+                thread_ticks=_qnx_cpu_nanoseconds(fields[3])
+                process_group=int(fields[5].strip(),0)
             except ValueError:continue
-            add(pid,fields[1].strip(),uid,user_ticks,system_ticks,fields[5].strip().upper() or '?',process_group)
+            add(pid,fields[1].strip(),uid,thread_ticks,fields[4].strip().upper() or '?',process_group)
 
     # Older pidin versions can ignore the custom format; parse its documented table.
     if not by_pid:
@@ -115,7 +126,7 @@ def _qnx_process_snapshot(total_memory):
         try:username=pwd.getpwuid(uid).pw_name if pwd else str(uid)
         except KeyError:username=str(uid)
         memory_bytes=rss_pages*page_size
-        row.update(user=username,cpu_ticks=row.pop('user_ticks')+row.pop('system_ticks'),start_time=0,
+        row.update(user=username,start_time=0,
             memory_bytes=memory_bytes,memory_percent=round(memory_bytes/total_memory*100,2) if total_memory else 0,
             sampled_at=sampled_at,can_control=False,control_reason='')
         processes.append(row)
@@ -133,9 +144,25 @@ def _qnx_process_control_allowed(row,is_admin):
     elif any(pattern in name for pattern in protected):reason='Tiến trình được bảo vệ theo cấu hình'
     return not reason,reason
 
+def _qnx_top_process_cpu():
+    output=_qnx_command(QNX_TOP,'-b','-i','1','-D','1','-z','100')
+    usage={}
+    for line in output.splitlines():
+        fields=line.split()
+        if len(fields)<6 or not fields[0].isdigit() or not fields[1].isdigit():continue
+        percent=next((value for value in fields[4:] if re.fullmatch(r'[0-9]+(?:[.,][0-9]+)?%',value)),None)
+        if percent is None:continue
+        pid=int(fields[0]);value=float(percent[:-1].replace(',','.'))
+        usage[pid]=min(100.0,usage.get(pid,0.0)+value)
+    return usage
+
+
 def _qnx_system_processes():
     memory=_qnx_memory_snapshot()
     processes=_qnx_process_snapshot(memory['total'])
+    top_cpu=_qnx_top_process_cpu()
+    for row in processes:
+        if row['pid'] in top_cpu:row['cpu_percent']=top_cpu[row['pid']]
     with dbconn() as db:user=db.execute('SELECT role FROM users WHERE username=?',(session.get('username',''),)).fetchone()
     is_admin=bool(user and user['role']=='admin')
     for row in processes:
