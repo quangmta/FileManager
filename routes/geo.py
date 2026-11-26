@@ -47,6 +47,16 @@ def geo_maps():
     maps.sort(key=lambda entry:entry['path'].casefold())
     return jsonify(maps=maps,truncated=truncated)
 
+@app.get('/api/geo/map-health')
+@require()
+def geo_map_health():
+    path=geo_file(request.args.get('path',''),{'.dt2'})
+    try:result=dted_integrity(path,MAX_GEO_FILE_BYTES)
+    except GeoDataError as error:abort(415,str(error))
+    except OSError as error:abort(400,f'Không kiểm tra được tile DTED: {error.strerror or error}')
+    audit('geo_map_integrity_check',rel(path),f"columns={result['checked_columns']} valid={result['valid']}")
+    return jsonify(path=rel(path),name=path.name,**result)
+
 @app.get('/api/geo/map-preview')
 @require()
 def geo_map_preview():

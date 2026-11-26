@@ -44,7 +44,39 @@ async function loadProcesses(forceRender=false) {
     const cpuPercent=Number.isFinite(process.cpu_percent)?process.cpu_percent:(elapsed>0?delta/clock/elapsed*100/cpuCount:0);
     return {...process,cpu_percent:Math.min(100,Math.max(0,cpuPercent))};
   });
-  processSamples=nextSamples;renderProcesses(forceRender);
+  processSamples=nextSamples;updateProcessHistorySelector();recordProcessHistory();renderProcesses(forceRender);
+}
+
+function updateProcessHistorySelector() {
+  const select=$('#process-history-select'),old=selectedProcessHistoryPid;
+  select.innerHTML=processRows.map(row=>`<option value="${row.pid}">${row.pid} · ${esc(row.name)}</option>`).join('');
+  const exists=processRows.some(row=>String(row.pid)===old);
+  selectedProcessHistoryPid=exists?old:String(processRows[0]?.pid||'');
+  if(selectedProcessHistoryPid!==old)processHistorySamples=[];
+  select.value=selectedProcessHistoryPid;
+}
+
+function recordProcessHistory() {
+  const row=processRows.find(item=>String(item.pid)===selectedProcessHistoryPid);if(!row)return;
+  processHistorySamples.push({time:Date.now(),cpu:row.cpu_percent,memory:row.memory_percent,cores:row.cpu_cores||[]});
+  if(processHistorySamples.length>30)processHistorySamples.shift();
+  renderProcessHistory();
+}
+
+function renderProcessHistory() {
+  const series=[{values:processHistorySamples.map(item=>item.cpu),color:'#18815d'},{values:processHistorySamples.map(item=>item.memory),color:'#e5a02c'}];
+  const coreCount=Math.max(0,...processHistorySamples.map(item=>item.cores.length));
+  for(let core=0;core<coreCount;core++)series.push({values:processHistorySamples.map(item=>item.cores[core]||0),color:resourceColors[(core+2)%resourceColors.length]});
+  drawResourceChart('process-history-chart',series,{max:100});
+}
+
+async function showProcessDetails(pid) {
+  const panel=$('#process-detail-panel'),content=$('#process-detail-content');
+  panel.classList.remove('hidden');content.textContent='Đang tải chi tiết tiến trình…';
+  try {
+    const data=await api(`/api/system/processes/${pid}/details`),row=data.process;
+    content.innerHTML=`<div class="process-detail-meta"><span><small>PID</small><b>${row.pid}</b></span><span><small>Người dùng</small><b>${esc(row.user||'—')}</b></span><span><small>Bộ nhớ RSS</small><b>${systemBytes(row.memory_bytes||0)}</b></span><span><small>Đường dẫn</small><b title="${esc(row.path||'—')}">${esc(row.path||'—')}</b></span><span><small>Thư mục làm việc</small><b title="${esc(row.cwd||'—')}">${esc(row.cwd||'—')}</b></span></div><p class="process-detail-command">${esc(row.command||row.name)}</p><h3>Thread (${row.threads.length})</h3><div class="process-detail-threads">${row.threads.map(thread=>`<span>TID ${thread.tid} · ${esc(thread.state||'?')} · Core ${thread.last_cpu??'—'}${Number.isFinite(thread.cpu_percent)?` · ${thread.cpu_percent.toFixed(1)}%`:''}</span>`).join('')||'<span class="muted">Không đọc được thread.</span>'}</div>`;
+  } catch(error){content.textContent=error.message;}
 }
 
 function renderProcesses(force=false) {
@@ -60,8 +92,9 @@ function renderProcesses(force=false) {
     const stateName=({R:'Đang chạy',S:'Ngủ',D:'Chờ I/O',T:'Tạm dừng',Z:'Đã kết thúc',I:'Chờ',RUNNING:'Đang chạy',READY:'Sẵn sàng',STOPPED:'Tạm dừng',HELD:'Tạm dừng',RECEIVE:'Chờ nhận',SEND:'Chờ gửi',REPLY:'Chờ phản hồi',NANOSLEEP:'Ngủ',CONDVAR:'Chờ điều kiện',MUTEX:'Chờ khóa',SIGSUSPEND:'Chờ tín hiệu',INTR:'Chờ ngắt',SEM:'Chờ semaphore'})[row.state]||row.state;
     const reason=row.can_control?'':(me?.role!=='admin'?'Cần quyền quản trị viên':row.control_reason||'Không được phép điều khiển');
     const coreUsage=Array.isArray(row.cpu_cores)?`<div class="process-core-usage">${row.cpu_cores.map((value,index)=>{const percent=Math.max(0,Math.min(100,Number(value)||0));return `<span title="Core ${index}: ${percent.toFixed(1)}% CPU của core, phân bổ theo core gần nhất của thread"><b>C${index}</b><i><em style="width:${percent}%"></em></i><small>${percent.toFixed(1)}%</small></span>`;}).join('')}</div>`:'<span class="muted">—</span>';
-    return `<tr><td class="process-name" title="${esc(row.name)}">${esc(row.name)}</td><td>${esc(row.user)}</td><td>${row.pid}</td><td>${row.cpu_percent.toFixed(1)}%</td><td>${coreUsage}</td><td>${systemBytes(row.memory_bytes)} <small>${row.memory_percent.toFixed(1)}%</small></td><td>${esc(stateName)}</td><td><div class="process-actions"><select data-process-action="${row.pid}" aria-label="Thao tác với ${esc(row.name)}" ${row.can_control?'':'disabled title="'+esc(reason)+'"'}><option value="stop">Tạm dừng</option><option value="continue">Tiếp tục</option><option value="end">Kết thúc</option><option value="kill">Buộc dừng</option></select><button class="secondary" type="button" data-process-run="${row.pid}" data-start-time="${row.start_time}" ${row.can_control?'':'disabled title="'+esc(reason)+'"'}>Thực thi</button></div></td></tr>`;
+    return `<tr><td class="process-name" title="${esc(row.name)}">${esc(row.name)}</td><td>${esc(row.user)}</td><td>${row.pid}</td><td>${row.cpu_percent.toFixed(1)}%</td><td>${coreUsage}</td><td>${systemBytes(row.memory_bytes)} <small>${row.memory_percent.toFixed(1)}%</small></td><td>${esc(stateName)}</td><td><div class="process-actions"><button class="secondary" type="button" data-process-details="${row.pid}">Chi tiết</button><select data-process-action="${row.pid}" aria-label="Thao tác với ${esc(row.name)}" ${row.can_control?'':'disabled title="'+esc(reason)+'"'}><option value="stop">Tạm dừng</option><option value="continue">Tiếp tục</option><option value="end">Kết thúc</option><option value="kill">Buộc dừng</option></select><button class="secondary" type="button" data-process-run="${row.pid}" data-start-time="${row.start_time}" ${row.can_control?'':'disabled title="'+esc(reason)+'"'}>Thực thi</button></div></td></tr>`;
   }).join('')||'<tr><td colspan="8" class="muted">Không tìm thấy tiến trình.</td></tr>';
+  $$('[data-process-details]').forEach(button=>button.onclick=()=>showProcessDetails(Number(button.dataset.processDetails)));
   $$('[data-process-run]').forEach(button=>button.onclick=()=>{
     const select=$(`[data-process-action="${button.dataset.processRun}"]`),row=processRows.find(item=>item.pid===Number(button.dataset.processRun)&&item.start_time===Number(button.dataset.startTime));
     if(row)executeProcessAction(row,select.value);
@@ -112,11 +145,33 @@ function renderResourceCharts() {
   drawResourceChart('network-history',[{values:resourceHistory.networkDown,color:'#1683cf'},{values:resourceHistory.networkUp,color:'#f04432'}],{max:networkMax,valueLabel:value=>formatRate(value)});
 }
 
+const healthValues={cpu:null,memory:null,disk:null,temperature:null};
+const healthThresholdDefaults={cpu:85,memory:90,disk:90,temperature:80};
+function healthThreshold(key){const input=$(`#health-${key==='memory'?'ram':key==='temperature'?'temp':key}-threshold`);const value=Number(input?.value);return Number.isFinite(value)?value:healthThresholdDefaults[key];}
+function updateMonitorHealth(values={}) {
+  Object.assign(healthValues,values);const warnings=[];
+  for(const [key,label] of [['cpu','CPU'],['memory','RAM'],['disk','Ổ đĩa'],['temperature','Nhiệt độ']]){
+    const value=healthValues[key];if(Number.isFinite(value)&&value>=healthThreshold(key))warnings.push(`${label} ${value.toFixed(1)}${key==='temperature'?' °C':'%'}`);
+  }
+  const status=$('#monitor-health-status');
+  status.classList.toggle('alert',warnings.length>0);status.classList.toggle('healthy',!warnings.length);
+  status.textContent=warnings.length?`Cảnh báo: ${warnings.join(' · ')}`:`Trong ngưỡng · CPU ${Number.isFinite(healthValues.cpu)?healthValues.cpu.toFixed(1)+'%':'—'} · RAM ${Number.isFinite(healthValues.memory)?healthValues.memory.toFixed(1)+'%':'—'} · ổ đĩa ${Number.isFinite(healthValues.disk)?healthValues.disk.toFixed(1)+'%':'—'} · nhiệt độ ${Number.isFinite(healthValues.temperature)?healthValues.temperature.toFixed(1)+' °C':'không có cảm biến'}.`;
+}
+function initHealthThresholds(){
+  for(const [key,defaultValue] of Object.entries(healthThresholdDefaults)){
+    const input=$(`#health-${key==='memory'?'ram':key==='temperature'?'temp':key}-threshold`);if(!input)continue;
+    input.value=localStorage.getItem(`filescope-health-${key}`)||defaultValue;
+    input.onchange=()=>{localStorage.setItem(`filescope-health-${key}`,String(healthThreshold(key)));updateMonitorHealth();};
+  }
+  updateMonitorHealth();
+}
+
 async function loadResources() {
   const data=await api('/api/system/resources'),elapsed=data.sampled_at-(resourceSample?.sampled_at||data.sampled_at);
   updateMonitorPollInterval(data.poll_interval_ms);
   const previousCpus=new Map((resourceSample?.cpus||[]).map(cpu=>[cpu.name,cpu.ticks]));
   const cores=data.cpus.map(cpu=>({name:cpu.name,percent:Number.isFinite(cpu.percent)?Math.max(0,Math.min(100,cpu.percent)):resourceCpuPercent(cpu.ticks,previousCpus.get(cpu.name))}));
+  updateMonitorHealth({cpu:cores.length?Math.max(...cores.map(core=>core.percent)):null,memory:data.memory.percent,temperature:data.temperature?.celsius??null});
   const coreNames=new Set(cores.map(core=>core.name));
   Object.keys(resourceHistory.cores).forEach(name=>{if(!coreNames.has(name))delete resourceHistory.cores[name];});
   cores.forEach(core=>{const history=resourceHistory.cores[core.name]||(resourceHistory.cores[core.name]=[]);history.push(core.percent);if(history.length>30)history.shift();});
@@ -143,6 +198,7 @@ async function loadResources() {
 async function loadDisk() {
   try {
     const data = await api('/api/disk');
+    updateMonitorHealth({disk:data.partitions.length?Math.max(...data.partitions.map(partition=>partition.percent)):null});
     $('#disk-grid').innerHTML = data.partitions.map(partition => `<article class="disk-card"><div class="disk-head"><span class="disk-icon">◉</span><span><b>${esc(partition.mount)}</b><small>Phân vùng</small></span><b class="percent">${partition.percent}%</b></div><div class="progress"><i style="width:${Math.min(partition.percent, 100)}%"></i></div><div class="disk-stats"><span><b>${size(partition.used)}</b><small>Đã sử dụng</small></span><span><b>${size(partition.free)}</b><small>Còn trống</small></span><span><b>${size(partition.total)}</b><small>Tổng dung lượng</small></span></div>${partition.free<data.reserve?`<p class="capacity-warning">Dung lượng trống thấp hơn mức dự phòng ${size(data.reserve)}.</p>`:''}</article>`).join('') || '<p>Không đọc được thông tin phân vùng.</p>';
   } catch (error) { toast(error.message, true); }
 }
@@ -150,6 +206,9 @@ $('#refresh-disk').onclick = loadDisk;
 $$('[data-monitor-tab]').forEach(button=>button.onclick=()=>selectMonitorTab(button.dataset.monitorTab));
 $('#refresh-monitor').onclick=()=>monitorTab==='storage'?loadDisk():refreshMonitorTab();
 $('#process-query').oninput=()=>renderProcesses(true);
+$('#process-history-select').onchange=event=>{selectedProcessHistoryPid=event.target.value;processHistorySamples=[];recordProcessHistory();};
+$('#process-detail-close').onclick=()=>$('#process-detail-panel').classList.add('hidden');
 $$('[data-process-sort]').forEach(button=>button.onclick=()=>{const key=button.dataset.processSort;if(processSort.key===key)processSort.direction*=-1;else{processSort.key=key;processSort.direction=['cpu_percent','memory_bytes'].includes(key)?-1:1;}renderProcesses(true);});
+initHealthThresholds();
 window.addEventListener('resize',()=>{if(!$('#monitor-view').classList.contains('hidden')&&monitorTab==='resources')renderResourceCharts();});
 

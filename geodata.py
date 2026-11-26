@@ -137,6 +137,24 @@ def dted_preview(path, max_bytes, max_side=256):
     }
 
 
+def dted_integrity(path, max_bytes):
+    """Check every DTED data record header and byte-sum checksum."""
+    header=dted_header(path,max_bytes)
+    checked=0;bad_checksums=[];bad_headers=[]
+    with Path(path).open('rb') as stream:
+        for column in range(header['columns']):
+            stream.seek(DTED_DATA_OFFSET+column*header['record_size'])
+            record=stream.read(header['record_size'])
+            checked+=1
+            if len(record)!=header['record_size'] or record[0]!=0xAA:
+                bad_headers.append(column);continue
+            if int.from_bytes(record[1:4],'big')!=column or int.from_bytes(record[4:6],'big')!=column or int.from_bytes(record[6:8],'big')!=0:
+                bad_headers.append(column);continue
+            if int.from_bytes(record[-4:],'big')!=(sum(record[:-4])&0xFFFFFFFF):bad_checksums.append(column)
+    return {**header,'checked_columns':checked,'bad_header_columns':bad_headers,
+            'bad_checksum_columns':bad_checksums,'valid':not bad_headers and not bad_checksums}
+
+
 def dted_elevation(path, latitude, longitude, max_bytes):
     header = dted_header(path, max_bytes)
     if not (header['min_latitude'] <= latitude <= header['max_latitude'] and header['min_longitude'] <= longitude <= header['max_longitude']):

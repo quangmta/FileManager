@@ -45,7 +45,8 @@ function renderTileHealth() {
     if(cursor<maxLon-1e-8){gapArea+=(maxLon-cursor)*(north-south);bandGaps++;}
     gapBands+=bandGaps;
   }
-  $('#geo-catalog-health').textContent=`${maps.length} tile hợp lệ · ${overlaps} cặp chồng diện tích · ${gapBands} dải trống trong khung bao (${gapArea.toFixed(5)}°²)`;
+  const integrity=geoIntegrity&&geoIntegrity.path===geoMap?.path?` · DTED ${geoIntegrity.valid?'checksum OK':`${geoIntegrity.bad_checksum_columns+geoIntegrity.bad_header_columns} lỗi checksum/header`}`:'';
+  $('#geo-catalog-health').textContent=`${maps.length} tile hợp lệ · ${overlaps} cặp chồng diện tích · ${gapBands} dải trống trong khung bao (${gapArea.toFixed(5)}°²)${integrity}`;
 }
 
 function locateGeoTile() {
@@ -165,14 +166,14 @@ async function loadGeoLog(path) {
   try {
     const result=await api(`/api/geo/logs?path=${encodeURIComponent(path)}`);
     if(token!==geoLogLoadToken)return;
-    geoLogRows=result.records;geoActiveLogPath=path;geoTerrainResults=[];geoTerrainAnalysisDone=false;geoSelectedRecord=null;geoPlaybackIndex=0;
+    geoLogRows=result.records;geoActiveLogPath=path;geoTerrainResults=[];geoTerrainAnalysisDone=false;geoSelectedRecord=null;geoPlaybackIndex=0;analyzeGeoAnomalies();
     $('#geo-log-summary').textContent=`${result.name}: ${result.total_records} bản ghi · ${result.coordinate_records} bản ghi có tọa độ${result.truncated?' · đã giới hạn 5.000':''}`;
-    $('#geo-export').disabled=!geoLogRows.length;renderGeoLogs();updateGeoCoverage();updateGeoActionState();renderGeoStats();
+    $('#geo-export').disabled=!geoLogRows.length;renderGeoLogs();updateGeoCoverage();updateGeoActionState();renderGeoStats();renderGeoComparison();
   } catch(error) {if(token===geoLogLoadToken)clearGeoLog(error.message);}
 }
 
 function clearGeoLog(message) {
-  geoLogLoadToken++;geoTerrainToken++;resetGeoChartView();stopGeoPlayback();geoLogRows=[];geoFilteredRows=[];geoActiveLogPath='';geoTerrainResults=[];geoTerrainAnalysisDone=false;geoSelectedRecord=null;geoPlaybackIndex=0;$('#geo-log-summary').textContent=message;$('#geo-log-body').innerHTML=`<tr><td colspan="8" class="muted">${esc(message)}</td></tr>`;$('#geo-export').disabled=true;$('#geo-report').disabled=true;$('#geo-timeline').disabled=true;$('#geo-play').disabled=true;$('#geo-timeline').max=0;$('#geo-timeline').value=0;$('#geo-time-label').textContent='—';$('#geo-analysis-info').textContent='Chọn dòng log có latitude/longitude.';$('#geo-log-stats').innerHTML='';$('#geo-terrain-summary').textContent='Chọn log và chạy phân tích toàn bộ hành trình qua các tile DTED.';updateGeoCoverage();updateGeoActionState();drawGeoMap();renderGeoChart();
+  geoAnomalies=[];$('#geo-anomaly-summary').textContent=message;$('#geo-anomaly-list').innerHTML='';$('#geo-comparison-stats').innerHTML='<p class="muted">Chưa có dữ liệu chuyến bay.</p>';geoLogLoadToken++;geoTerrainToken++;resetGeoChartView();stopGeoPlayback();geoLogRows=[];geoFilteredRows=[];geoActiveLogPath='';geoTerrainResults=[];geoTerrainAnalysisDone=false;geoSelectedRecord=null;geoPlaybackIndex=0;$('#geo-log-summary').textContent=message;$('#geo-log-body').innerHTML=`<tr><td colspan="8" class="muted">${esc(message)}</td></tr>`;$('#geo-export').disabled=true;$('#geo-report').disabled=true;$('#geo-timeline').disabled=true;$('#geo-play').disabled=true;$('#geo-timeline').max=0;$('#geo-timeline').value=0;$('#geo-time-label').textContent='—';$('#geo-analysis-info').textContent='Chọn dòng log có latitude/longitude.';$('#geo-log-stats').innerHTML='';$('#geo-terrain-summary').textContent='Chọn log và chạy phân tích toàn bộ hành trình qua các tile DTED.';updateGeoCoverage();updateGeoActionState();drawGeoMap();renderGeoChart();
 }
 
 function stopGeoPlayback() {
@@ -189,6 +190,7 @@ function updateGeoCoverage() {
 function updateGeoActionState() {
   const hasCoordinates=geoLogRows.some(row=>row.latitude!==null&&row.longitude!==null);
   $('#geo-analyze-terrain').disabled=!(geoMaps.some(item=>!item.error)&&hasCoordinates);
+  $('#geo-check-map').disabled=!$('#geo-map-select').value;
   $('#geo-report').disabled=!geoLogRows.length;
   const overlayPath=$('#geo-overlay-select').value;
   $('#geo-add-overlay').disabled=!overlayPath||overlayPath===geoActiveLogPath||geoOverlays.some(layer=>layer.path===overlayPath)||geoOverlays.length>=4;
@@ -197,7 +199,7 @@ function updateGeoActionState() {
 
 function renderGeoOverlays() {
   $('#geo-overlay-list').innerHTML=geoOverlays.map((layer,index)=>`<span class="geo-overlay-chip" style="--series-color:${geoTrackColors[index%geoTrackColors.length]}"><i></i>${esc(layer.name)}<button type="button" data-remove-overlay="${index}" aria-label="Gỡ lớp phủ ${esc(layer.name)}">×</button></span>`).join('');
-  $$('[data-remove-overlay]').forEach(button=>button.onclick=()=>{geoOverlays.splice(Number(button.dataset.removeOverlay),1);renderGeoOverlays();updateGeoActionState();drawGeoMap();});
+  $$('[data-remove-overlay]').forEach(button=>button.onclick=()=>{geoOverlays.splice(Number(button.dataset.removeOverlay),1);renderGeoOverlays();renderGeoComparison();updateGeoActionState();drawGeoMap();});
   updateGeoActionState();drawGeoMap();
 }
 
@@ -208,7 +210,7 @@ async function addGeoOverlay() {
   if(geoOverlays.length>=4){toast('Tối đa 4 quỹ đạo phủ cùng lúc.',true);return;}
   try {
     const result=await api(`/api/geo/logs?path=${encodeURIComponent(path)}`);
-    const layer={path,name:result.name,rows:result.records};geoOverlays.push(layer);renderGeoOverlays();
+    const layer={path,name:result.name,rows:result.records};geoOverlays.push(layer);renderGeoOverlays();renderGeoComparison();
     const firstPoint=layer.rows.find(row=>row.latitude!==null&&row.longitude!==null);
     if(firstPoint&&$('#geo-auto-map').checked)await ensureGeoMapForPoint(firstPoint);
     toast(`Đã thêm quỹ đạo phủ “${layer.name}” · ${layer.rows.length} bản ghi. Quỹ đạo nằm trên khung bản đồ.`);
@@ -235,6 +237,39 @@ function calculateGeoStats() {
   const outside=geoTerrainResults.length?Math.max(0,coordinates.length-geoTerrainResults.length):geoMap?coordinates.filter(row=>row.latitude<geoMap.min_latitude||row.latitude>geoMap.max_latitude||row.longitude<geoMap.min_longitude||row.longitude>geoMap.max_longitude).length:null;
   const aglRows=geoLogRows.filter(row=>Number.isFinite(row.agl_m)),low=aglRows.filter(isLowAgl).length;
   return {points:geoLogRows.length,coordinatePoints:coordinates.length,distance,duration,avgSpeed:speeds.length?speeds.reduce((a,b)=>a+b,0)/speeds.length:(duration?distance/duration:null),maxSpeed:speeds.length?Math.max(...speeds):null,minAltitude:altitudes.length?Math.min(...altitudes):null,maxAltitude:altitudes.length?Math.max(...altitudes):null,outside,low,analyzed:aglRows.length};
+}
+
+function analyzeGeoAnomalies() {
+  const maxSpeed=Number($('#geo-anomaly-max-speed')?.value||50),configuredGap=Number($('#geo-anomaly-gap')?.value||10),intervals=[];
+  for(let i=1;i<geoLogRows.length;i++){const before=Date.parse(geoLogRows[i-1].timestamp),after=Date.parse(geoLogRows[i].timestamp);if(Number.isFinite(before)&&Number.isFinite(after)&&after>before)intervals.push((after-before)/1000);}
+  const sorted=[...intervals].sort((a,b)=>a-b),median=sorted.length?sorted[Math.floor(sorted.length/2)]:0,gapLimit=Math.max(configuredGap,median*3);
+  const found=[];let previous=null;
+  geoLogRows.forEach((row,index)=>{
+    if(row.latitude===null||row.longitude===null)found.push({index:row.index,type:'Thiếu tọa độ',detail:'Không có đủ latitude/longitude.'});
+    const time=Date.parse(row.timestamp);
+    if(previous&&Number.isFinite(time)&&Number.isFinite(previous.time)&&time>previous.time&&(time-previous.time)/1000>gapLimit)found.push({index:row.index,type:'Khoảng trống log',detail:`${((time-previous.time)/1000).toFixed(1)} giây.`});
+    if(Number.isFinite(row.speed_mps)&&row.speed_mps>maxSpeed)found.push({index:row.index,type:'Tốc độ cao',detail:`${row.speed_mps.toFixed(1)} m/s (ngưỡng ${maxSpeed}).`});
+    if(previous&&Number.isFinite(row.altitude_m)&&Number.isFinite(previous.altitude)&&Math.abs(row.altitude_m-previous.altitude)>100)found.push({index:row.index,type:'Nhảy cao độ',detail:`Thay đổi ${Math.abs(row.altitude_m-previous.altitude).toFixed(1)} m.`});
+    if(row.latitude!==null&&row.longitude!==null&&geoMaps.length&&!geoMaps.some(map=>!map.error&&row.latitude>=map.min_latitude&&row.latitude<=map.max_latitude&&row.longitude>=map.min_longitude&&row.longitude<=map.max_longitude))found.push({index:row.index,type:'Ngoài vùng phủ DTED',detail:'Không có tile đã lập chỉ mục chứa tọa độ này.'});
+    previous={time,altitude:row.altitude_m};
+  });
+  geoAnomalies=found;
+  const counts=found.reduce((out,item)=>(out[item.type]=(out[item.type]||0)+1,out),{});
+  $('#geo-anomaly-summary').textContent=found.length?`${found.length} dấu hiệu cần xem lại · ${Object.entries(counts).map(([name,count])=>`${name}: ${count}`).join(' · ')}`:'Không phát hiện dấu hiệu vượt ngưỡng đã đặt.';
+  $('#geo-anomaly-list').innerHTML=found.slice(0,30).map(item=>`<li><button type="button" data-anomaly-index="${item.index}">#${item.index+1} · ${esc(item.type)} · ${esc(item.detail)}</button></li>`).join('')+(found.length>30?`<li class="muted">Còn ${found.length-30} dấu hiệu khác.</li>`:'');
+  $$('[data-anomaly-index]').forEach(button=>button.onclick=()=>{const position=geoFilteredRows.findIndex(row=>row.index===Number(button.dataset.anomalyIndex));if(position<0){$('#geo-log-query').value='';$('#geo-log-from').value='';$('#geo-log-to').value='';renderGeoLogs();}const target=geoFilteredRows.findIndex(row=>row.index===Number(button.dataset.anomalyIndex));if(target>=0){geoPlaybackIndex=target;$('#geo-timeline').value=target;showPlaybackRecord(geoFilteredRows[target]);renderGeoLogs();}});
+}
+
+function summarizeFlight(rows) {
+  const points=rows.filter(row=>row.latitude!==null&&row.longitude!==null);let distance=0;
+  for(let i=1;i<points.length;i++){const a=points[i-1],b=points[i],rad=Math.PI/180,dLat=(b.latitude-a.latitude)*rad,dLon=(b.longitude-a.longitude)*rad,h=Math.sin(dLat/2)**2+Math.cos(a.latitude*rad)*Math.cos(b.latitude*rad)*Math.sin(dLon/2)**2;distance+=2*6371008.8*Math.asin(Math.sqrt(h));}
+  const times=rows.map(row=>Date.parse(row.timestamp)).filter(Number.isFinite),speeds=rows.map(row=>row.speed_mps).filter(Number.isFinite),alts=rows.map(row=>row.altitude_m).filter(Number.isFinite);
+  return {points:points.length,distance,duration:times.length>1?(Math.max(...times)-Math.min(...times))/1000:null,average:speeds.length?speeds.reduce((a,b)=>a+b,0)/speeds.length:null,max:speeds.length?Math.max(...speeds):null,minAlt:alts.length?Math.min(...alts):null,maxAlt:alts.length?Math.max(...alts):null};
+}
+function renderGeoComparison() {
+  const flights=[{name:$('#geo-log-select').selectedOptions[0]?.textContent||geoActiveLogPath,rows:geoLogRows},...geoOverlays];
+  if(!geoLogRows.length){$('#geo-comparison-stats').innerHTML='<p class="muted">Chọn log và thêm các quỹ đạo cần so sánh.</p>';return;}
+  $('#geo-comparison-stats').innerHTML=`<div class="geo-compare-table-wrap"><table class="geo-compare-table"><thead><tr><th>Chuyến bay</th><th>Điểm GPS</th><th>Quãng đường</th><th>Thời lượng</th><th>Tốc độ TB / max</th><th>Dải cao độ</th></tr></thead><tbody>${flights.map(flight=>{const s=summarizeFlight(flight.rows);return `<tr><td>${esc(flight.name)}</td><td>${s.points}</td><td>${(s.distance/1000).toFixed(2)} km</td><td>${s.duration===null?'—':formatDuration(s.duration)}</td><td>${s.average===null?'—':`${s.average.toFixed(1)} / ${s.max.toFixed(1)} m/s`}</td><td>${s.minAlt===null?'—':`${s.minAlt}–${s.maxAlt} m`}</td></tr>`;}).join('')}</tbody></table></div>`;
 }
 
 function formatDuration(seconds) {
@@ -543,12 +578,14 @@ function exportGeoReport() {
   const cards=[['Bản ghi',stats.points],['Tọa độ',stats.coordinatePoints],['Quãng đường',`${(stats.distance/1000).toFixed(2)} km`],['Thời lượng',formatDuration(stats.duration)],['Tốc độ trung bình',stats.avgSpeed===null?'—':`${stats.avgSpeed.toFixed(1)} m/s`],['Tốc độ lớn nhất',stats.maxSpeed===null?'—':`${stats.maxSpeed.toFixed(1)} m/s`],['Cao độ',stats.minAltitude===null?'—':`${stats.minAltitude}–${stats.maxAltitude} m`],['Ngoài tile',stats.outside??'Chưa chọn tile'],['Dưới ngưỡng AGL',stats.analyzed?`${stats.low}/${stats.analyzed} (ngưỡng ${Number($('#geo-agl-threshold').value)} m)`:'Chưa phân tích']];
   const table=lowRows.length?`<h2>Các điểm dưới ngưỡng AGL (${lowRows.length}${stats.low>100?' trong '+stats.low:''})</h2><table><thead><tr><th>#</th><th>Thời gian</th><th>Lat</th><th>Lon</th><th>Cao độ</th><th>Địa hình</th><th>AGL</th></tr></thead><tbody>${lowRows.map(row=>`<tr><td>${row.index+1}</td><td>${esc(row.timestamp||'—')}</td><td>${row.latitude?.toFixed(6)??'—'}</td><td>${row.longitude?.toFixed(6)??'—'}</td><td>${row.altitude_m??'—'}</td><td>${row.terrain_elevation_m??'—'}</td><td>${row.agl_m?.toFixed(1)??'—'}</td></tr>`).join('')}</tbody></table>`:'<p>Không có điểm dưới ngưỡng hoặc chưa chạy phân tích AGL.</p>';
   const overlays=geoOverlays.map(layer=>`<li>${esc(layer.name)} — ${layer.rows.length} bản ghi</li>`).join('')||'<li>Không có quỹ đạo phủ thêm.</li>';
-  const html=`<!doctype html><html lang="vi"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Báo cáo ${esc(name)}</title><style>body{font:14px system-ui,sans-serif;max-width:1100px;margin:30px auto;padding:0 18px;color:#24312b}h1{font-size:24px}.muted{color:#68776f}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:9px}.card{border:1px solid #dfe7e2;border-radius:7px;padding:11px}.card small{display:block;color:#68776f}.card b{display:block;margin-top:5px}img{display:block;max-width:100%;margin:14px 0;border:1px solid #dfe7e2}table{border-collapse:collapse;width:100%;font-size:12px}th,td{text-align:left;padding:7px;border-bottom:1px solid #e5ebe7}th{background:#f4f7f5}section{margin-top:26px}@media print{body{margin:0 auto}.cards{break-inside:avoid}}</style><h1>Báo cáo log: ${esc(name)}</h1><p class="muted">Tạo lúc ${esc(new Date().toISOString())}${geoMap?` · Tile ${esc(geoMap.path)}`:''}</p><div class="cards">${cards.map(([label,value])=>`<div class="card"><small>${esc(label)}</small><b>${esc(value)}</b></div>`).join('')}</div>${mapImage?`<section><h2>Bản đồ và quỹ đạo</h2><img alt="Bản đồ địa hình với quỹ đạo" src="${mapImage}"></section>`:''}${chartImage?`<section><h2>Độ cao bay so với địa hình</h2><img alt="Biểu đồ cao độ bay và địa hình" src="${chartImage}"></section>`:''}${speedChartImage?`<section><h2>Tốc độ theo thời gian</h2><img alt="Biểu đồ tốc độ" src="${speedChartImage}"></section>`:''}<section><h2>Quỹ đạo phủ</h2><ul>${overlays}</ul></section><section>${table}</section><p class="muted">AGL là chênh lệch giữa cao độ log và địa hình; chỉ diễn giải khi các nguồn dùng cùng đơn vị và mốc cao độ.</p></html>`;
+  const anomalyTable=geoAnomalies.length?`<section><h2>Dấu hiệu log cần xem lại (${geoAnomalies.length})</h2><table><thead><tr><th>#</th><th>Loại</th><th>Chi tiết</th></tr></thead><tbody>${geoAnomalies.slice(0,100).map(item=>`<tr><td>${item.index+1}</td><td>${esc(item.type)}</td><td>${esc(item.detail)}</td></tr>`).join('')}</tbody></table></section>`:'<section><h2>Kiểm tra bất thường log</h2><p>Không phát hiện dấu hiệu vượt ngưỡng đã đặt.</p></section>';
+  const html=`<!doctype html><html lang="vi"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Báo cáo ${esc(name)}</title><style>body{font:14px system-ui,sans-serif;max-width:1100px;margin:30px auto;padding:0 18px;color:#24312b}h1{font-size:24px}.muted{color:#68776f}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:9px}.card{border:1px solid #dfe7e2;border-radius:7px;padding:11px}.card small{display:block;color:#68776f}.card b{display:block;margin-top:5px}img{display:block;max-width:100%;margin:14px 0;border:1px solid #dfe7e2}table{border-collapse:collapse;width:100%;font-size:12px}th,td{text-align:left;padding:7px;border-bottom:1px solid #e5ebe7}th{background:#f4f7f5}section{margin-top:26px}@media print{body{margin:0 auto}.cards{break-inside:avoid}}</style><h1>Báo cáo log: ${esc(name)}</h1><p class="muted">Tạo lúc ${esc(new Date().toISOString())}${geoMap?` · Tile ${esc(geoMap.path)}`:''}</p><div class="cards">${cards.map(([label,value])=>`<div class="card"><small>${esc(label)}</small><b>${esc(value)}</b></div>`).join('')}</div>${mapImage?`<section><h2>Bản đồ và quỹ đạo</h2><img alt="Bản đồ địa hình với quỹ đạo" src="${mapImage}"></section>`:''}${chartImage?`<section><h2>Độ cao bay so với địa hình</h2><img alt="Biểu đồ cao độ bay và địa hình" src="${chartImage}"></section>`:''}${speedChartImage?`<section><h2>Tốc độ theo thời gian</h2><img alt="Biểu đồ tốc độ" src="${speedChartImage}"></section>`:''}<section><h2>Quỹ đạo phủ</h2><ul>${overlays}</ul></section>${anomalyTable}<section>${table}</section><p class="muted">AGL là chênh lệch giữa cao độ log và địa hình; chỉ diễn giải khi các nguồn dùng cùng đơn vị và mốc cao độ.</p></html>`;
   const blob=new Blob([html],{type:'text/html;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');
   link.href=url;link.download='filescope-flight-report.html';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 
 $('#geo-refresh').onclick=loadGeoCatalog;
+$('#geo-check-map').onclick=async()=>{const path=$('#geo-map-select').value;if(!path){toast('Chọn tile DTED trước.',true);return;}const button=$('#geo-check-map');button.disabled=true;button.textContent='Đang kiểm tra…';try{const result=await api(`/api/geo/map-health?path=${encodeURIComponent(path)}`);geoIntegrity={path,valid:result.valid,bad_checksum_columns:result.bad_checksum_columns.length,bad_header_columns:result.bad_header_columns.length,checked_columns:result.checked_columns};renderTileHealth();toast(result.valid?`Tile hợp lệ: đã kiểm tra ${result.checked_columns} cột.`:`Tile có lỗi: ${result.bad_checksum_columns.length} checksum, ${result.bad_header_columns.length} header.` ,!result.valid);}catch(error){toast(error.message,true);}finally{button.disabled=false;button.textContent='Kiểm tra DTED';}};
 $('#geo-map-select').onchange=event=>event.target.value?loadGeoMap(event.target.value):clearGeoMap('Chưa chọn tile bản đồ.');
 $('#geo-log-select').onchange=event=>event.target.value?loadGeoLog(event.target.value):clearGeoLog('Chưa chọn tệp log.');
 $('#geo-auto-map').onchange=event=>{const status=$('#geo-auto-map-status');if(!event.target.checked){if(geoAutoMapTargetPath){geoMapLoadToken++;geoAutoMapTargetPath='';geoAutoMapPromise=null;$('#geo-map-select').value=geoMap?.path||'';}status.textContent='Tự động chọn bản đồ đã tắt.';return;}status.textContent='Đang dò tile theo điểm bay hiện tại…';const row=geoFilteredRows[geoPlaybackIndex];if(row)ensureGeoMapForPoint(row);};
@@ -565,9 +602,10 @@ $('#geo-report').onclick=exportGeoReport;
 $('#geo-find-tile').onclick=locateGeoTile;
 ['geo-find-lat','geo-find-lon'].forEach(id=>$('#'+id).onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();locateGeoTile();}});
 $('#geo-add-overlay').onclick=addGeoOverlay;
-$('#geo-clear-overlays').onclick=()=>{geoOverlays=[];renderGeoOverlays();};
+$('#geo-clear-overlays').onclick=()=>{geoOverlays=[];renderGeoOverlays();renderGeoComparison();};
 $('#geo-analyze-terrain').onclick=analyzeGeoTerrain;
 $('#geo-agl-threshold').oninput=()=>{renderGeoStats();renderGeoLogs();drawGeoMap();};
+['geo-anomaly-max-speed','geo-anomaly-gap'].forEach(id=>$('#'+id).oninput=analyzeGeoAnomalies);
 bindGeoChart('geo-log-chart');bindGeoChart('geo-speed-chart');setGeoChartMode('zoom');
 $('#geo-chart-mode-zoom').onclick=()=>setGeoChartMode('zoom');
 $('#geo-chart-mode-pan').onclick=()=>setGeoChartMode('pan');

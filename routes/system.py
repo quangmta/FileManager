@@ -72,35 +72,36 @@ def _qnx_cpu_nanoseconds(value):
 
 def _qnx_process_snapshot(total_memory):
     # Delimiters keep paths/names and QNX's numeric counters separate.
-    output=_qnx_command(QNX_PIDIN,'-F','%a|%b|%N|%U|%z|%J|%P|%l')
+    output=_qnx_command(QNX_PIDIN,'-F','%a|%b|%N|%n|%U|%z|%J|%P|%l')
     page_size=4096
     try:page_size=int(os.sysconf('SC_PAGE_SIZE'))
     except (AttributeError,ValueError,OSError):pass
     sampled_at=time.monotonic();by_pid={}
     state_priority={'RUNNING':5,'READY':4,'STOPPED':3,'SIGSUSPEND':2,'NANOSLEEP':1}
 
-    def add(pid,tid,name,uid=0,thread_ticks=0,state='?',process_group=None,last_cpu=None):
+    def add(pid,tid,name,uid=0,thread_ticks=0,state='?',process_group=None,last_cpu=None,path=None):
         if pid<1 or not name:return
         row=by_pid.get(pid)
         if row is None:
-            row={'pid':pid,'name':name,'uid':uid,'cpu_ticks':0,'threads':{},
+            row={'pid':pid,'name':name,'path':path or name,'uid':uid,'cpu_ticks':0,'threads':{},
                  'state':state,'process_group':process_group if process_group is not None else pid}
             by_pid[pid]=row
         else:
             if state_priority.get(state,0)>state_priority.get(row['state'],0):row['state']=state
+            if path and (not row.get('path') or row['path']==row['name']):row['path']=path
         row['cpu_ticks']+=thread_ticks
-        row['threads'][tid]={'tid':tid,'last_cpu':last_cpu}
+        row['threads'][tid]={'tid':tid,'last_cpu':last_cpu,'state':state}
 
     for line in output.splitlines():
         fields=line.split('|')
-        if len(fields)>=8:
+        if len(fields)>=9:
             try:
-                pid=int(fields[0].strip());tid=int(fields[1].strip());uid=int(fields[3].strip(),0)
-                thread_ticks=_qnx_cpu_nanoseconds(fields[4])
-                process_group=int(fields[6].strip(),0)
-                last_cpu=int(fields[7].strip(),0) if fields[7].strip() not in ('','-','?') else None
+                pid=int(fields[0].strip());tid=int(fields[1].strip());uid=int(fields[4].strip(),0)
+                thread_ticks=_qnx_cpu_nanoseconds(fields[5])
+                process_group=int(fields[7].strip(),0)
+                last_cpu=int(fields[8].strip(),0) if fields[8].strip() not in ('','-','?') else None
             except ValueError:continue
-            add(pid,tid,fields[2].strip(),uid,thread_ticks,fields[5].strip().upper() or '?',process_group,last_cpu)
+            add(pid,tid,fields[2].strip(),uid,thread_ticks,fields[6].strip().upper() or '?',process_group,last_cpu,fields[3].strip())
 
     # Older pidin versions can ignore the custom format; parse its documented table.
     if not by_pid:
@@ -111,7 +112,7 @@ def _qnx_process_snapshot(total_memory):
             try:pid=int(fields[0]);tid=int(fields[1])
             except ValueError:continue
             # Default columns: pid, tid, process path, priority, state, blocked-on.
-            add(pid,tid,fields[2],state=fields[4].upper() if len(fields)>4 else '?')
+            add(pid,tid,fields[2],state=fields[4].upper() if len(fields)>4 else '?',path=fields[2])
 
     processes=[]
     try:
@@ -182,13 +183,29 @@ def _qnx_system_processes():
     return jsonify(processes=processes,total_memory=memory['total'],clock_ticks=1_000_000_000,
                    cpu_count=memory['cpu_count'],poll_interval_ms=5000,sampled_at=time.monotonic())
 
+def _system_temperature():
+    readings=[]
+    for root in (Path('/sys/class/thermal'),Path('/sys/class/hwmon')):
+        try:paths=sorted(root.glob('thermal_zone*/temp'))+sorted(root.glob('hwmon*/temp*_input'))
+        except OSError:paths=[]
+        for path in paths:
+            try:
+                raw=float(path.read_text().strip())
+                celsius=raw/1000 if raw>1000 else raw
+                if -20<=celsius<=150:readings.append((celsius,str(path)))
+            except (OSError,ValueError):continue
+    if not readings:return None
+    value,source=max(readings,key=lambda item:item[0])
+    return {'celsius':round(value,1),'source':source}
+
+
 def _qnx_system_resources():
     top_output=_qnx_command(QNX_TOP,'-b','-i','1','-D','1')
     memory=_qnx_memory_snapshot(top_output)
     cpus=_qnx_cpu_snapshot(top_output)
     return jsonify(cpus=cpus,memory=memory,
         swap={'total':0,'used':0,'free':0,'percent':0},interfaces=[],network_supported=False,
-        poll_interval_ms=5000,sampled_at=time.monotonic())
+        poll_interval_ms=5000,sampled_at=time.monotonic(),temperature=None)
 
 @app.get('/api/disk')
 @require()
@@ -272,6 +289,36 @@ def system_processes():
     return jsonify(processes=rows,total_memory=total_memory,clock_ticks=os.sysconf('SC_CLK_TCK'),
                    cpu_count=max(1,os.cpu_count() or 1),sampled_at=time.monotonic())
 
+@app.get('/api/system/processes/<int:pid>/details')
+@require()
+def process_details(pid):
+    if platform.system().upper()=='QNX':
+        row=next((item for item in _qnx_process_snapshot(0) if item['pid']==pid),None)
+        if row is None:abort(404,'Tiến trình không còn tồn tại.')
+        thread_cpu=_qnx_top_process_cpu().get(pid,{})
+        for thread in row['threads']:
+            thread['cpu_percent']=thread_cpu.get(thread['tid'],0.0)
+        row['command']=row['name'];row['cwd']='—'
+        return jsonify(process=row)
+    linux_procfs_required()
+    try:
+        row=process_snapshot(pid);proc=Path('/proc')/str(pid)
+        def link_value(name):
+            try:return os.readlink(proc/name)
+            except OSError:return 'Không khả dụng'
+        command=(proc/'cmdline').read_bytes().replace(b'\0',b' ').decode('utf-8','replace').strip()[:2000]
+        threads=[]
+        for entry in (proc/'task').iterdir():
+            if not entry.name.isdigit():continue
+            try:
+                tid=int(entry.name);stat_text=(entry/'stat').read_text(encoding='utf8');close=stat_text.rfind(')');fields=stat_text[close+2:].split()
+                threads.append({'tid':tid,'state':fields[0],'last_cpu':int(fields[36]) if len(fields)>36 else None})
+            except (OSError,ValueError,IndexError):continue
+        row.update(path=link_value('exe'),cwd=link_value('cwd'),command=command or row['name'],threads=threads)
+        return jsonify(process=row)
+    except FileNotFoundError:abort(404,'Tiến trình không còn tồn tại.')
+    except (OSError,ValueError,IndexError):abort(403,'Không đủ quyền đọc chi tiết tiến trình.')
+
 @app.get('/api/system/resources')
 @require()
 def system_resources():
@@ -292,7 +339,7 @@ def system_resources():
     total=meminfo.get('MemTotal',0);available=meminfo.get('MemAvailable',meminfo.get('MemFree',0));used=max(0,total-available)
     cache=max(0,meminfo.get('Cached',0)+meminfo.get('SReclaimable',0)+meminfo.get('Buffers',0)-meminfo.get('Shmem',0))
     swap_total=meminfo.get('SwapTotal',0);swap_free=meminfo.get('SwapFree',0);swap_used=max(0,swap_total-swap_free)
-    return jsonify(cpus=cpus,memory={'total':total,'available':available,'used':used,'cache':cache,'percent':round(used/total*100,1) if total else 0},swap={'total':swap_total,'used':swap_used,'free':swap_free,'percent':round(swap_used/swap_total*100,1) if swap_total else 0},interfaces=interfaces,sampled_at=time.monotonic())
+    return jsonify(cpus=cpus,memory={'total':total,'available':available,'used':used,'cache':cache,'percent':round(used/total*100,1) if total else 0},swap={'total':swap_total,'used':swap_used,'free':swap_free,'percent':round(swap_used/swap_total*100,1) if swap_total else 0},interfaces=interfaces,temperature=_system_temperature(),sampled_at=time.monotonic())
 
 @app.post('/api/system/processes/<int:pid>/signal')
 @require('admin')

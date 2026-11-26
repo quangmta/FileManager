@@ -7,7 +7,7 @@ from pathlib import Path, PurePosixPath
 from flask import Flask, abort, jsonify, request, send_file, session
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.exceptions import HTTPException
-from geodata import GeoDataError, dted_elevation, dted_elevations, dted_header, dted_preview, parse_log
+from geodata import GeoDataError, dted_elevation, dted_elevations, dted_header, dted_integrity, dted_preview, parse_log
 
 if __name__ == "__main__":
     sys.modules.setdefault("app", sys.modules[__name__])
