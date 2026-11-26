@@ -58,63 +58,88 @@ def _qnx_cpu_snapshot(top_output):
     return [{'name':f'cpu{index}','percent':0.0} for index in range(count)]
 
 def _qnx_process_snapshot(total_memory):
-    # The custom format keeps parsing stable across QNX releases and locales.
-    output=_qnx_command(QNX_PIDIN,'-F','%a %N %U %u %v')
+    # Delimiters keep paths/names and QNX's numeric counters separate.
+    output=_qnx_command(QNX_PIDIN,'-F','%a|%N|%U|%u|%v|%J|%P')
     page_size=4096
     try:page_size=int(os.sysconf('SC_PAGE_SIZE'))
     except (AttributeError,ValueError,OSError):pass
-    sampled_at=time.monotonic();processes=[];seen=set()
+    sampled_at=time.monotonic();by_pid={}
+    state_priority={'RUNNING':5,'READY':4,'STOPPED':3,'SIGSUSPEND':2,'NANOSLEEP':1}
 
-    def append_process(pid,name,uid=0,user_ticks=0,system_ticks=0):
-        if pid<1 or pid in seen or not name:return
-        seen.add(pid)
-        rss_pages=0
+    def add(pid,name,uid=0,user_ticks=0,system_ticks=0,state='?',process_group=None):
+        if pid<1 or not name:return
+        row=by_pid.get(pid)
+        if row is None:
+            row={'pid':pid,'name':name,'uid':uid,'user_ticks':user_ticks,'system_ticks':system_ticks,
+                 'state':state,'process_group':process_group if process_group is not None else pid}
+            by_pid[pid]=row
+        else:
+            # pidin may emit one line per thread. %u/%v are process totals; keep the
+            # largest snapshot and summarize thread state with the most active state.
+            row['user_ticks']=max(row['user_ticks'],user_ticks)
+            row['system_ticks']=max(row['system_ticks'],system_ticks)
+            if state_priority.get(state,0)>state_priority.get(row['state'],0):row['state']=state
+
+    for line in output.splitlines():
+        fields=line.split('|')
+        if len(fields)>=7:
+            try:
+                pid=int(fields[0].strip());uid=int(fields[2].strip(),0)
+                user_ticks=int(float(fields[3].strip()));system_ticks=int(float(fields[4].strip()))
+                process_group=int(fields[6].strip(),0)
+            except ValueError:continue
+            add(pid,fields[1].strip(),uid,user_ticks,system_ticks,fields[5].strip().upper() or '?',process_group)
+
+    # Older pidin versions can ignore the custom format; parse its documented table.
+    if not by_pid:
+        for line in _qnx_command(QNX_PIDIN).splitlines():
+            fields=line.split()
+            if len(fields)<3:continue
+            if not fields[0].isdigit():continue
+            try:pid=int(fields[0]);tid=int(fields[1])
+            except ValueError:continue
+            # Default columns: pid, tid, process path, priority, state, blocked-on.
+            add(pid,fields[2],state=fields[4].upper() if len(fields)>4 else '?')
+
+    processes=[]
+    try:
+        import pwd
+    except ImportError:pwd=None
+    for row in by_pid.values():
+        pid=row['pid'];uid=row['uid'];rss_pages=0
         try:
             vmstat=(Path('/proc')/str(pid)/'vmstat').read_text(encoding='ascii',errors='replace')
             rss_match=re.search(r'^as_stats\.rss=(0x[0-9a-f]+|\d+)',vmstat,re.M|re.I)
             if rss_match:rss_pages=int(rss_match.group(1),0)
         except (OSError,ValueError):pass
-        try:
-            import pwd
-            username=pwd.getpwuid(uid).pw_name
-        except (ImportError,KeyError):username=str(uid)
+        try:username=pwd.getpwuid(uid).pw_name if pwd else str(uid)
+        except KeyError:username=str(uid)
         memory_bytes=rss_pages*page_size
-        processes.append({'pid':pid,'name':name,'user':username,'uid':uid,'state':'?',
-            'process_group':pid,'cpu_ticks':user_ticks+system_ticks,'start_time':0,
-            'memory_bytes':memory_bytes,'memory_percent':round(memory_bytes/total_memory*100,2) if total_memory else 0,
-            'sampled_at':sampled_at,'can_control':False,
-            'control_reason':'Điều khiển tiến trình QNX chưa được bật'})
-
-    for line in output.splitlines():
-        fields=line.split()
-        if len(fields)<2:continue
-        try:pid=int(fields[0])
-        except ValueError:continue
-        uid=user_ticks=system_ticks=0
-        if len(fields)>=5:
-            try:
-                uid=int(fields[-3],0);user_ticks=int(fields[-2],0);system_ticks=int(fields[-1],0)
-                name=' '.join(fields[1:-3])
-            except ValueError:name=fields[1]
-        else:name=fields[1]
-        append_process(pid,name,uid,user_ticks,system_ticks)
-
-    # Some QNX images ship an older pidin that ignores or formats -F differently.
-    # Fall back to its documented default PID-TID/name listing instead of showing an empty table.
-    if not processes:
-        for line in _qnx_command(QNX_PIDIN).splitlines():
-            fields=line.split()
-            if len(fields)<2:continue
-            match=re.fullmatch(r'(\d+)(?:-(\d+))?',fields[0])
-            if not match:continue
-            pid=int(match.group(1))
-            name_index=2 if len(fields)>2 and fields[1].isdigit() else 1
-            append_process(pid,fields[name_index])
+        row.update(user=username,cpu_ticks=row.pop('user_ticks')+row.pop('system_ticks'),start_time=0,
+            memory_bytes=memory_bytes,memory_percent=round(memory_bytes/total_memory*100,2) if total_memory else 0,
+            sampled_at=sampled_at,can_control=False,control_reason='')
+        processes.append(row)
     return processes
+
+
+def _qnx_process_control_allowed(row,is_admin):
+    protected={name.strip().casefold() for name in os.environ.get('FILEMANAGER_PROTECTED_PROCESSES','core_r,core-r,corer').split(',') if name.strip()}
+    name=row['name'].casefold()
+    service_group=os.getpgrp()
+    reason=''
+    if not is_admin:reason='Cần quyền quản trị viên'
+    elif row['pid']<=1 or row['pid']==os.getpid() or row.get('process_group')==service_group:
+        reason='Tiến trình hệ thống hoặc server được bảo vệ'
+    elif any(pattern in name for pattern in protected):reason='Tiến trình được bảo vệ theo cấu hình'
+    return not reason,reason
 
 def _qnx_system_processes():
     memory=_qnx_memory_snapshot()
     processes=_qnx_process_snapshot(memory['total'])
+    with dbconn() as db:user=db.execute('SELECT role FROM users WHERE username=?',(session.get('username',''),)).fetchone()
+    is_admin=bool(user and user['role']=='admin')
+    for row in processes:
+        row['can_control'],row['control_reason']=_qnx_process_control_allowed(row,is_admin)
     return jsonify(processes=processes,total_memory=memory['total'],clock_ticks=1_000_000_000,
                    cpu_count=memory['cpu_count'],poll_interval_ms=5000,sampled_at=time.monotonic())
 
@@ -234,17 +259,27 @@ def system_resources():
 @require('admin')
 @csrf
 def signal_process(pid):
-    linux_procfs_required()
     data=request.get_json(silent=True) or {};actions={'stop':signal.SIGSTOP,'continue':signal.SIGCONT,'end':signal.SIGTERM,'kill':signal.SIGKILL}
     action=data.get('action');expected_start=data.get('start_time')
     if action not in actions:abort(400,'Thao tác tiến trình không hợp lệ.')
     if not isinstance(expected_start,int) or expected_start<0:abort(400,'Thiếu mã định danh tiến trình hợp lệ.')
-    try:row=process_snapshot(pid)
-    except (OSError,ValueError,IndexError):abort(404,'Tiến trình không còn tồn tại.')
-    if row['start_time']!=expected_start:abort(409,'PID đã được tái sử dụng; hãy tải lại danh sách tiến trình.')
-    protected={name.strip().casefold() for name in os.environ.get('FILEMANAGER_PROTECTED_PROCESSES','core_r,core-r,corer').split(',') if name.strip()}
-    if pid<=1 or row['uid']==0 or row['process_group']==os.getpgrp() or any(pattern in row['name'].casefold() for pattern in protected):
-        abort(403,'Tiến trình này được bảo vệ và không thể điều khiển từ giao diện.')
+    is_qnx=platform.system().upper()=='QNX'
+    if is_qnx:
+        processes=_qnx_process_snapshot(0)
+        row=next((item for item in processes if item['pid']==pid),None)
+        if row is None:abort(404,'Tiến trình không còn tồn tại.')
+        if expected_start!=row['start_time'] or data.get('name')!=row['name'] or data.get('uid')!=row['uid']:
+            abort(409,'Thông tin tiến trình đã thay đổi; hãy tải lại danh sách.')
+        allowed,reason=_qnx_process_control_allowed(row,True)
+        if not allowed:abort(403,reason)
+    else:
+        linux_procfs_required()
+        try:row=process_snapshot(pid)
+        except (OSError,ValueError,IndexError):abort(404,'Tiến trình không còn tồn tại.')
+        if row['start_time']!=expected_start:abort(409,'PID đã được tái sử dụng; hãy tải lại danh sách tiến trình.')
+        protected={name.strip().casefold() for name in os.environ.get('FILEMANAGER_PROTECTED_PROCESSES','core_r,core-r,corer').split(',') if name.strip()}
+        if pid<=1 or row['uid']==0 or row['process_group']==os.getpgrp() or any(pattern in row['name'].casefold() for pattern in protected):
+            abort(403,'Tiến trình này được bảo vệ và không thể điều khiển từ giao diện.')
     try:os.kill(pid,actions[action])
     except ProcessLookupError:abort(404,'Tiến trình đã kết thúc.')
     except PermissionError:abort(403,'Quyền hệ điều hành không cho phép thao tác này.')

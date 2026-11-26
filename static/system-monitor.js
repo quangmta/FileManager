@@ -57,7 +57,7 @@ function renderProcesses(force=false) {
   $$('[data-process-sort]').forEach(button=>{const active=button.dataset.processSort===processSort.key;button.querySelector('span').textContent=active?(processSort.direction===1?'↑':'↓'):'';button.closest('th').setAttribute('aria-sort',active?(processSort.direction===1?'ascending':'descending'):'none');});
   $('#process-summary').textContent=`${rows.length.toLocaleString()} tiến trình${me?.role==='admin'?` · tự làm mới mỗi ${monitorPollInterval/1000} giây`:' · cần quyền quản trị để điều khiển tiến trình'}`;
   $('#process-table-body').innerHTML=rows.map(row=>{
-    const stateName=({R:'Đang chạy',S:'Ngủ',D:'Chờ I/O',T:'Tạm dừng',Z:'Đã kết thúc',I:'Chờ'})[row.state]||row.state;
+    const stateName=({R:'Đang chạy',S:'Ngủ',D:'Chờ I/O',T:'Tạm dừng',Z:'Đã kết thúc',I:'Chờ',RUNNING:'Đang chạy',READY:'Sẵn sàng',STOPPED:'Tạm dừng',HELD:'Tạm dừng',RECEIVE:'Chờ nhận',SEND:'Chờ gửi',REPLY:'Chờ phản hồi',NANOSLEEP:'Ngủ',CONDVAR:'Chờ điều kiện',MUTEX:'Chờ khóa',SIGSUSPEND:'Chờ tín hiệu',INTR:'Chờ ngắt',SEM:'Chờ semaphore'})[row.state]||row.state;
     const reason=row.can_control?'':(me?.role!=='admin'?'Cần quyền quản trị viên':row.control_reason||'Không được phép điều khiển');
     return `<tr><td class="process-name" title="${esc(row.name)}">${esc(row.name)}</td><td>${esc(row.user)}</td><td>${row.pid}</td><td>${row.cpu_percent.toFixed(1)}%</td><td>${systemBytes(row.memory_bytes)} <small>${row.memory_percent.toFixed(1)}%</small></td><td>${esc(stateName)}</td><td><div class="process-actions"><select data-process-action="${row.pid}" aria-label="Thao tác với ${esc(row.name)}" ${row.can_control?'':'disabled title="'+esc(reason)+'"'}><option value="stop">Tạm dừng</option><option value="continue">Tiếp tục</option><option value="end">Kết thúc</option><option value="kill">Buộc dừng</option></select><button class="secondary" type="button" data-process-run="${row.pid}" data-start-time="${row.start_time}" ${row.can_control?'':'disabled title="'+esc(reason)+'"'}>Thực thi</button></div></td></tr>`;
   }).join('')||'<tr><td colspan="7" class="muted">Không tìm thấy tiến trình.</td></tr>';
@@ -69,7 +69,7 @@ function renderProcesses(force=false) {
 
 function executeProcessAction(process,action) {
   const run=async()=>{
-    try {const result=await api(`/api/system/processes/${process.pid}/signal`,{method:'POST',body:JSON.stringify({action,start_time:process.start_time})});toast(result.message);await loadProcesses(true);}
+    try {const result=await api(`/api/system/processes/${process.pid}/signal`,{method:'POST',body:JSON.stringify({action,start_time:process.start_time,name:process.name,uid:process.uid})});toast(result.message);await loadProcesses(true);}
     catch(error){toast(error.message,true);await loadProcesses(true).catch(()=>{});}
   };
   if(action==='end'||action==='kill')confirmModal(action==='kill'?'Buộc dừng tiến trình?':'Kết thúc tiến trình?',`${process.name} (PID ${process.pid}) sẽ nhận tín hiệu ${action==='kill'?'KILL':'TERM'}.`,run);
