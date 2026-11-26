@@ -72,34 +72,35 @@ def _qnx_cpu_nanoseconds(value):
 
 def _qnx_process_snapshot(total_memory):
     # Delimiters keep paths/names and QNX's numeric counters separate.
-    output=_qnx_command(QNX_PIDIN,'-F','%a|%N|%U|%z|%J|%P')
+    output=_qnx_command(QNX_PIDIN,'-F','%a|%b|%N|%U|%z|%J|%P|%l')
     page_size=4096
     try:page_size=int(os.sysconf('SC_PAGE_SIZE'))
     except (AttributeError,ValueError,OSError):pass
     sampled_at=time.monotonic();by_pid={}
     state_priority={'RUNNING':5,'READY':4,'STOPPED':3,'SIGSUSPEND':2,'NANOSLEEP':1}
 
-    def add(pid,name,uid=0,thread_ticks=0,state='?',process_group=None):
+    def add(pid,tid,name,uid=0,thread_ticks=0,state='?',process_group=None,last_cpu=None):
         if pid<1 or not name:return
         row=by_pid.get(pid)
         if row is None:
-            row={'pid':pid,'name':name,'uid':uid,'cpu_ticks':thread_ticks,
+            row={'pid':pid,'name':name,'uid':uid,'cpu_ticks':0,'threads':{},
                  'state':state,'process_group':process_group if process_group is not None else pid}
             by_pid[pid]=row
         else:
-            # pidin emits one row per thread; %z is that thread's accumulated CPU time.
-            row['cpu_ticks']+=thread_ticks
             if state_priority.get(state,0)>state_priority.get(row['state'],0):row['state']=state
+        row['cpu_ticks']+=thread_ticks
+        row['threads'][tid]={'tid':tid,'last_cpu':last_cpu}
 
     for line in output.splitlines():
         fields=line.split('|')
-        if len(fields)>=6:
+        if len(fields)>=8:
             try:
-                pid=int(fields[0].strip());uid=int(fields[2].strip(),0)
-                thread_ticks=_qnx_cpu_nanoseconds(fields[3])
-                process_group=int(fields[5].strip(),0)
+                pid=int(fields[0].strip());tid=int(fields[1].strip());uid=int(fields[3].strip(),0)
+                thread_ticks=_qnx_cpu_nanoseconds(fields[4])
+                process_group=int(fields[6].strip(),0)
+                last_cpu=int(fields[7].strip(),0) if fields[7].strip() not in ('','-','?') else None
             except ValueError:continue
-            add(pid,fields[1].strip(),uid,thread_ticks,fields[4].strip().upper() or '?',process_group)
+            add(pid,tid,fields[2].strip(),uid,thread_ticks,fields[5].strip().upper() or '?',process_group,last_cpu)
 
     # Older pidin versions can ignore the custom format; parse its documented table.
     if not by_pid:
@@ -110,7 +111,7 @@ def _qnx_process_snapshot(total_memory):
             try:pid=int(fields[0]);tid=int(fields[1])
             except ValueError:continue
             # Default columns: pid, tid, process path, priority, state, blocked-on.
-            add(pid,fields[2],state=fields[4].upper() if len(fields)>4 else '?')
+            add(pid,tid,fields[2],state=fields[4].upper() if len(fields)>4 else '?')
 
     processes=[]
     try:
@@ -129,6 +130,7 @@ def _qnx_process_snapshot(total_memory):
         row.update(user=username,start_time=0,
             memory_bytes=memory_bytes,memory_percent=round(memory_bytes/total_memory*100,2) if total_memory else 0,
             sampled_at=sampled_at,can_control=False,control_reason='')
+        row['threads']=list(row['threads'].values())
         processes.append(row)
     return processes
 
@@ -152,8 +154,8 @@ def _qnx_top_process_cpu():
         if len(fields)<6 or not fields[0].isdigit() or not fields[1].isdigit():continue
         percent=next((value for value in fields[4:] if re.fullmatch(r'[0-9]+(?:[.,][0-9]+)?%',value)),None)
         if percent is None:continue
-        pid=int(fields[0]);value=float(percent[:-1].replace(',','.'))
-        usage[pid]=min(100.0,usage.get(pid,0.0)+value)
+        pid=int(fields[0]);tid=int(fields[1]);value=float(percent[:-1].replace(',','.'))
+        usage.setdefault(pid,{})[tid]=value
     return usage
 
 
@@ -161,8 +163,18 @@ def _qnx_system_processes():
     memory=_qnx_memory_snapshot()
     processes=_qnx_process_snapshot(memory['total'])
     top_cpu=_qnx_top_process_cpu()
+    cpu_count=memory['cpu_count']
     for row in processes:
-        if row['pid'] in top_cpu:row['cpu_percent']=top_cpu[row['pid']]
+        thread_cpu=top_cpu.get(row['pid'],{});core_usage=[0.0]*cpu_count;total_cpu=0.0;located=False
+        for thread in row.pop('threads',[]):
+            percent=thread_cpu.get(thread['tid'])
+            if percent is None:continue
+            total_cpu+=percent
+            core=thread['last_cpu']
+            if isinstance(core,int) and 0<=core<cpu_count:
+                core_usage[core]+=percent*cpu_count;located=True
+        row['cpu_percent']=min(100.0,total_cpu)
+        row['cpu_cores']=[round(min(100.0,value),1) for value in core_usage] if located else None
     with dbconn() as db:user=db.execute('SELECT role FROM users WHERE username=?',(session.get('username',''),)).fetchone()
     is_admin=bool(user and user['role']=='admin')
     for row in processes:
