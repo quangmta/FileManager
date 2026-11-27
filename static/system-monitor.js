@@ -68,8 +68,8 @@ function recordProcessHistory() {
 function renderProcessHistory() {
   const coreCount=Math.max(0,...processHistorySamples.map(item=>item.cores.length));
   const series=[{values:processHistorySamples.map(item=>item.cpu),color:'#18815d'},{values:processHistorySamples.map(item=>item.memory),color:'#e5a02c'}];
-  for(let core=0;core<coreCount;core++)series.push({values:processHistorySamples.map(item=>item.cores[core]||0),color:resourceColors[(core+2)%resourceColors.length]});
-  $('#process-history-legend').innerHTML=[['CPU tổng','#18815d'],['RAM','#e5a02c'],...Array.from({length:coreCount},(_,core)=>[`Core ${core}`,resourceColors[(core+2)%resourceColors.length]])].map(([label,color])=>`<span><i style="background:${color}"></i>${label}</span>`).join('');
+  for(let core=0;core<coreCount;core++)series.push({values:processHistorySamples.map(item=>item.cores[core]||0),color:cpuCoreColor(core)});
+  $('#process-history-legend').innerHTML=[['CPU tổng','#18815d'],['RAM','#e5a02c'],...Array.from({length:coreCount},(_,core)=>[`Core ${core}`,cpuCoreColor(core)])].map(([label,color])=>`<span><i style="background:${color}"></i>${label}</span>`).join('');
   $('#process-history-note').textContent=coreCount?`CPU tổng tính trên toàn bộ ${coreCount} core; mỗi đường Core là % của riêng core đó. Vì vậy, trên 4 core, 100% một core tương đương khoảng 25% tổng CPU. Core được ước lượng theo CPU gần nhất mà pidin báo cho từng thread; nếu thread di chuyển giữa core, đường Core có thể lệch. Lịch sử tab Tài nguyên lấy mẫu riêng nên đỉnh có thể không trùng thời điểm.`:'CPU tổng tính trên toàn bộ năng lực CPU của máy; Linux không cung cấp phân bổ lịch sử từng tiến trình theo core trong giao diện này.';
   drawResourceChart('process-history-chart',series,{max:100});
 }
@@ -147,9 +147,11 @@ function drawResourceChart(id,series,{max=100,valueLabel=value=>`${value.toFixed
   for(const line of series){const values=line.values||[];if(values.length<2)continue;const offset=Math.max(0,RESOURCE_HISTORY_SAMPLE_COUNT-values.length);ctx.strokeStyle=line.color;ctx.lineWidth=1.8;ctx.lineJoin='round';ctx.lineCap='round';ctx.beginPath();values.forEach((value,index)=>{const x=left+(offset+index)/historyIntervals*width,y=top+height-Math.max(0,Math.min(1,value/max))*height;if(index)ctx.lineTo(x,y);else ctx.moveTo(x,y);});ctx.stroke();}
 }
 
-const resourceColors=['#e91e63','#ff7f2a','#ffd600','#a8e63c','#7e57c2','#00a7a7','#607d8b','#f44336','#8bc34a','#03a9f4','#c2185b','#9c27b0'];
+const cpuCoreColors=['#1683cf','#7e57c2','#00a7a7','#c2185b','#f44336','#607d8b','#ffd600','#8bc34a'];
+function cpuCoreColor(index){return cpuCoreColors[index%cpuCoreColors.length];}
+function cpuCoreIndex(name,fallback=0){const match=String(name).match(/(?:cpu)?(\d+)$/i);return match?Number(match[1]):fallback;}
 function renderResourceCharts() {
-  const coreSeries=Object.entries(resourceHistory.cores).map(([name,values],index)=>({name,values,color:resourceColors[index%resourceColors.length]}));
+  const coreSeries=Object.entries(resourceHistory.cores).sort(([left],[right])=>cpuCoreIndex(left)-cpuCoreIndex(right)).map(([name,values],index)=>({name,values,color:cpuCoreColor(cpuCoreIndex(name,index))}));
   drawResourceChart('cpu-history',coreSeries,{max:100});
   $('#cpu-cores-grid').innerHTML=coreSeries.map(line=>`<div class="cpu-core-legend"><i style="background:${line.color}"></i><b>${esc(line.name.toUpperCase())}</b><span>${(line.values.at(-1)||0).toFixed(1)}%</span></div>`).join('');
   drawResourceChart('memory-history',[{values:resourceHistory.memory,color:'#d4145a'},{values:resourceHistory.swap,color:'#45a83d'}],{max:100});
