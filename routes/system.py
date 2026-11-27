@@ -181,7 +181,7 @@ def _qnx_system_processes():
     for row in processes:
         row['can_control'],row['control_reason']=_qnx_process_control_allowed(row,is_admin)
     return jsonify(processes=processes,total_memory=memory['total'],clock_ticks=1_000_000_000,
-                   cpu_count=memory['cpu_count'],poll_interval_ms=5000,sampled_at=time.monotonic())
+                   cpu_count=memory['cpu_count'],poll_interval_ms=1000,sampled_at=time.monotonic())
 
 def _system_temperature():
     readings=[]
@@ -205,7 +205,7 @@ def _qnx_system_resources():
     cpus=_qnx_cpu_snapshot(top_output)
     return jsonify(cpus=cpus,memory=memory,
         swap={'total':0,'used':0,'free':0,'percent':0},interfaces=[],network_supported=False,
-        poll_interval_ms=5000,sampled_at=time.monotonic(),temperature=None)
+        poll_interval_ms=1000,sampled_at=time.monotonic(),temperature=None)
 
 @app.get('/api/disk')
 @require()

@@ -25,13 +25,15 @@ function selectMonitorTab(tab) {
 }
 
 async function refreshMonitorTab() {
+  if(monitorPollInFlight)return;
+  monitorPollInFlight=true;
   try {
     if(monitorTab==='processes')await loadProcesses();
     else if(monitorTab==='resources')await loadResources();
   } catch(error) {
     if(/procfs|QNX|Linux/i.test(error.message)){monitorUnsupported=true;stopMonitorPolling();$('#process-summary').textContent=error.message;$('#process-table-body').innerHTML=`<tr><td colspan="8" class="muted">${esc(error.message)}</td></tr>`;$('#resource-unavailable').textContent=error.message;$('#resource-unavailable').classList.remove('hidden');$('#resource-content').classList.add('hidden');}
     else toast(error.message,true);
-  }
+  } finally {monitorPollInFlight=false;}
 }
 
 async function loadProcesses(forceRender=false) {
@@ -64,9 +66,11 @@ function recordProcessHistory() {
 }
 
 function renderProcessHistory() {
-  const series=[{values:processHistorySamples.map(item=>item.cpu),color:'#18815d'},{values:processHistorySamples.map(item=>item.memory),color:'#e5a02c'}];
   const coreCount=Math.max(0,...processHistorySamples.map(item=>item.cores.length));
+  const series=[{values:processHistorySamples.map(item=>item.cpu),color:'#18815d'},{values:processHistorySamples.map(item=>item.memory),color:'#e5a02c'}];
   for(let core=0;core<coreCount;core++)series.push({values:processHistorySamples.map(item=>item.cores[core]||0),color:resourceColors[(core+2)%resourceColors.length]});
+  $('#process-history-legend').innerHTML=[['CPU tổng','#18815d'],['RAM','#e5a02c'],...Array.from({length:coreCount},(_,core)=>[`Core ${core}`,resourceColors[(core+2)%resourceColors.length]])].map(([label,color])=>`<span><i style="background:${color}"></i>${label}</span>`).join('');
+  $('#process-history-note').textContent=coreCount?`CPU tổng tính trên toàn bộ ${coreCount} core; mỗi đường Core là % của riêng core đó. Vì vậy, trên 4 core, 100% một core tương đương khoảng 25% tổng CPU. Core được ước lượng theo CPU gần nhất mà pidin báo cho từng thread; nếu thread di chuyển giữa core, đường Core có thể lệch. Lịch sử tab Tài nguyên lấy mẫu riêng nên đỉnh có thể không trùng thời điểm.`:'CPU tổng tính trên toàn bộ năng lực CPU của máy; Linux không cung cấp phân bổ lịch sử từng tiến trình theo core trong giao diện này.';
   drawResourceChart('process-history-chart',series,{max:100});
 }
 

@@ -12,7 +12,7 @@ let geoMaps = [], geoLogFiles = [], geoMap = null, geoLogRows = [], geoFilteredR
 let geoMapLoadToken=0,geoLogLoadToken=0,geoTerrainToken=0,geoAutoMapTargetPath='',geoAutoMapPromise=null;
 let geoChartZoom=1,geoChartRange=null,geoHeightYRange=null,geoSpeedYRange=null,geoChartMode='zoom',geoChartDrag=null,geoChartDragFrame=0;
 const geoChartScales={};
-let monitorTab='processes',monitorPollTimer=null,monitorPollInterval=2000,monitorUnsupported=false,processSamples=new Map(),processRows=[],processHistorySamples=[],selectedProcessHistoryPid='',resourceSample=null,processSort={key:'cpu_percent',direction:-1};
+let monitorTab='processes',monitorPollTimer=null,monitorPollInterval=2000,monitorPollInFlight=false,monitorUnsupported=false,processSamples=new Map(),processRows=[],processHistorySamples=[],selectedProcessHistoryPid='',resourceSample=null,processSort={key:'cpu_percent',direction:-1};
 const resourceHistory={cores:{},memory:[],swap:[],networkDown:[],networkUp:[]};
 const GEO_LOG_TABLE_LIMIT=1000;
 const GEO_ANOMALY_BATCH_SIZE=200;

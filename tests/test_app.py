@@ -66,6 +66,22 @@ class FileManagerTest(unittest.TestCase):
         self.assertEqual(self.client.get('/api/audit').status_code, 403)
         self.assertFalse((self.root / 'nope').exists())
 
+    def test_qnx_per_core_cpu_is_normalized_separately_from_machine_total(self):
+        self.login()
+        process = {'pid': 4242, 'name': 'worker', 'uid': 1000, 'process_group': 4243,
+                   'threads': [{'tid': 4243, 'last_cpu': 2}], 'cpu_ticks': 0,
+                   'memory_bytes': 0, 'memory_percent': 0, 'start_time': 0}
+        with patch('routes.system.platform.system', return_value='QNX'), \
+             patch('routes.system._qnx_memory_snapshot', return_value={'total': 4 * 1024**3, 'cpu_count': 4}), \
+             patch('routes.system._qnx_process_snapshot', return_value=[process]), \
+             patch('routes.system._qnx_top_process_cpu', return_value={4242: {4243: 25.0}}):
+            response = self.client.get('/api/system/processes')
+        self.assertEqual(response.status_code, 200)
+        row = response.json['processes'][0]
+        self.assertEqual(response.json['poll_interval_ms'], 1000)
+        self.assertEqual(row['cpu_percent'], 25.0)
+        self.assertEqual(row['cpu_cores'], [0.0, 0.0, 100.0, 0.0])
+
     def test_file_operations_upload_download_and_audit(self):
         token = self.login()
         self.assertEqual(self.post('/api/create', token, {'path': '', 'name': 'folder', 'type': 'directory'}).status_code, 200)
