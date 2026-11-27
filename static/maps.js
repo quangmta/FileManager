@@ -240,23 +240,31 @@ function calculateGeoStats() {
 }
 
 function analyzeGeoAnomalies() {
-  const maxSpeed=Number($('#geo-anomaly-max-speed')?.value||50),configuredGap=Number($('#geo-anomaly-gap')?.value||10),intervals=[];
-  for(let i=1;i<geoLogRows.length;i++){const before=Date.parse(geoLogRows[i-1].timestamp),after=Date.parse(geoLogRows[i].timestamp);if(Number.isFinite(before)&&Number.isFinite(after)&&after>before)intervals.push((after-before)/1000);}
-  const sorted=[...intervals].sort((a,b)=>a-b),median=sorted.length?sorted[Math.floor(sorted.length/2)]:0,gapLimit=Math.max(configuredGap,median*3);
-  const found=[];let previous=null;
+  const readThreshold=(id,fallback)=>{const value=Number($('#'+id)?.value);return Number.isFinite(value)&&value>0?value:fallback;};
+  const maxSpeed=readThreshold('geo-anomaly-max-speed',50),gapLimit=readThreshold('geo-anomaly-gap',10),altitudeJumpLimit=readThreshold('geo-anomaly-altitude-jump',100);
+  const found=[],observedGaps=[];let previous=null;
   geoLogRows.forEach((row,index)=>{
     if(row.latitude===null||row.longitude===null)found.push({index:row.index,type:'Thiếu tọa độ',detail:'Không có đủ latitude/longitude.'});
     const time=Date.parse(row.timestamp);
-    if(previous&&Number.isFinite(time)&&Number.isFinite(previous.time)&&time>previous.time&&(time-previous.time)/1000>gapLimit)found.push({index:row.index,type:'Khoảng trống log',detail:`${((time-previous.time)/1000).toFixed(1)} giây.`});
+    if(previous&&Number.isFinite(time)&&Number.isFinite(previous.time)&&time>previous.time){const gapSeconds=(time-previous.time)/1000;observedGaps.push(gapSeconds);if(gapSeconds>=gapLimit)found.push({index:row.index,type:'Khoảng trống log',detail:`${gapSeconds.toFixed(1)} giây (ngưỡng ${gapLimit} giây).`});}
     if(Number.isFinite(row.speed_mps)&&row.speed_mps>maxSpeed)found.push({index:row.index,type:'Tốc độ cao',detail:`${row.speed_mps.toFixed(1)} m/s (ngưỡng ${maxSpeed}).`});
-    if(previous&&Number.isFinite(row.altitude_m)&&Number.isFinite(previous.altitude)&&Math.abs(row.altitude_m-previous.altitude)>100)found.push({index:row.index,type:'Nhảy cao độ',detail:`Thay đổi ${Math.abs(row.altitude_m-previous.altitude).toFixed(1)} m.`});
+    if(previous&&Number.isFinite(row.altitude_m)&&Number.isFinite(previous.altitude)&&Math.abs(row.altitude_m-previous.altitude)>=altitudeJumpLimit)found.push({index:row.index,type:'Nhảy cao độ',detail:`Thay đổi ${Math.abs(row.altitude_m-previous.altitude).toFixed(1)} m (ngưỡng ${altitudeJumpLimit} m).`});
     if(row.latitude!==null&&row.longitude!==null&&geoMaps.length&&!geoMaps.some(map=>!map.error&&row.latitude>=map.min_latitude&&row.latitude<=map.max_latitude&&row.longitude>=map.min_longitude&&row.longitude<=map.max_longitude))found.push({index:row.index,type:'Ngoài vùng phủ DTED',detail:'Không có tile đã lập chỉ mục chứa tọa độ này.'});
     previous={time,altitude:row.altitude_m};
   });
   geoAnomalies=found;
+  geoAnomalyVisibleCount=GEO_ANOMALY_BATCH_SIZE;
   const counts=found.reduce((out,item)=>(out[item.type]=(out[item.type]||0)+1,out),{});
-  $('#geo-anomaly-summary').textContent=found.length?`${found.length} dấu hiệu cần xem lại · ${Object.entries(counts).map(([name,count])=>`${name}: ${count}`).join(' · ')}`:'Không phát hiện dấu hiệu vượt ngưỡng đã đặt.';
-  $('#geo-anomaly-list').innerHTML=found.slice(0,30).map(item=>`<li><button type="button" data-anomaly-index="${item.index}">#${item.index+1} · ${esc(item.type)} · ${esc(item.detail)}</button></li>`).join('')+(found.length>30?`<li class="muted">Còn ${found.length-30} dấu hiệu khác.</li>`:'');
+  const thresholdSummary=`Ngưỡng: tốc độ > ${maxSpeed} m/s · khoảng trống ≥ ${gapLimit} s · nhảy cao độ ≥ ${altitudeJumpLimit} m`;
+  const gapSummary=observedGaps.length?`Khoảng cách timestamp lớn nhất giữa hai bản ghi liên tiếp: ${Math.max(...observedGaps).toFixed(1)} s.`:'Không có cặp timestamp liên tiếp hợp lệ để tính khoảng trống.';
+  $('#geo-anomaly-summary').textContent=found.length?`${found.length} dấu hiệu cần xem lại · ${thresholdSummary} · ${gapSummary} · ${Object.entries(counts).map(([name,count])=>`${name}: ${count}`).join(' · ')}`:`Không phát hiện dấu hiệu vượt ngưỡng. ${thresholdSummary}. ${gapSummary}`;
+  renderGeoAnomalyList();
+}
+
+function renderGeoAnomalyList() {
+  const visible=geoAnomalies.slice(0,geoAnomalyVisibleCount),remaining=geoAnomalies.length-visible.length;
+  $('#geo-anomaly-list').innerHTML=visible.map(item=>`<li><button type="button" data-anomaly-index="${item.index}">#${item.index+1} · ${esc(item.type)} · ${esc(item.detail)}</button></li>`).join('')+(remaining?`<li class="geo-anomaly-more"><button type="button" id="geo-anomaly-show-more">Hiển thị thêm ${Math.min(GEO_ANOMALY_BATCH_SIZE,remaining)} dấu hiệu · còn ${remaining}</button></li>`:'');
+  $('#geo-anomaly-show-more')?.addEventListener('click',()=>{geoAnomalyVisibleCount+=GEO_ANOMALY_BATCH_SIZE;renderGeoAnomalyList();});
   $$('[data-anomaly-index]').forEach(button=>button.onclick=()=>{const position=geoFilteredRows.findIndex(row=>row.index===Number(button.dataset.anomalyIndex));if(position<0){$('#geo-log-query').value='';$('#geo-log-from').value='';$('#geo-log-to').value='';renderGeoLogs();}const target=geoFilteredRows.findIndex(row=>row.index===Number(button.dataset.anomalyIndex));if(target>=0){geoPlaybackIndex=target;$('#geo-timeline').value=target;showPlaybackRecord(geoFilteredRows[target]);renderGeoLogs();}});
 }
 
@@ -578,7 +586,7 @@ function exportGeoReport() {
   const cards=[['Bản ghi',stats.points],['Tọa độ',stats.coordinatePoints],['Quãng đường',`${(stats.distance/1000).toFixed(2)} km`],['Thời lượng',formatDuration(stats.duration)],['Tốc độ trung bình',stats.avgSpeed===null?'—':`${stats.avgSpeed.toFixed(1)} m/s`],['Tốc độ lớn nhất',stats.maxSpeed===null?'—':`${stats.maxSpeed.toFixed(1)} m/s`],['Cao độ',stats.minAltitude===null?'—':`${stats.minAltitude}–${stats.maxAltitude} m`],['Ngoài tile',stats.outside??'Chưa chọn tile'],['Dưới ngưỡng AGL',stats.analyzed?`${stats.low}/${stats.analyzed} (ngưỡng ${Number($('#geo-agl-threshold').value)} m)`:'Chưa phân tích']];
   const table=lowRows.length?`<h2>Các điểm dưới ngưỡng AGL (${lowRows.length}${stats.low>100?' trong '+stats.low:''})</h2><table><thead><tr><th>#</th><th>Thời gian</th><th>Lat</th><th>Lon</th><th>Cao độ</th><th>Địa hình</th><th>AGL</th></tr></thead><tbody>${lowRows.map(row=>`<tr><td>${row.index+1}</td><td>${esc(row.timestamp||'—')}</td><td>${row.latitude?.toFixed(6)??'—'}</td><td>${row.longitude?.toFixed(6)??'—'}</td><td>${row.altitude_m??'—'}</td><td>${row.terrain_elevation_m??'—'}</td><td>${row.agl_m?.toFixed(1)??'—'}</td></tr>`).join('')}</tbody></table>`:'<p>Không có điểm dưới ngưỡng hoặc chưa chạy phân tích AGL.</p>';
   const overlays=geoOverlays.map(layer=>`<li>${esc(layer.name)} — ${layer.rows.length} bản ghi</li>`).join('')||'<li>Không có quỹ đạo phủ thêm.</li>';
-  const anomalyTable=geoAnomalies.length?`<section><h2>Dấu hiệu log cần xem lại (${geoAnomalies.length})</h2><table><thead><tr><th>#</th><th>Loại</th><th>Chi tiết</th></tr></thead><tbody>${geoAnomalies.slice(0,100).map(item=>`<tr><td>${item.index+1}</td><td>${esc(item.type)}</td><td>${esc(item.detail)}</td></tr>`).join('')}</tbody></table></section>`:'<section><h2>Kiểm tra bất thường log</h2><p>Không phát hiện dấu hiệu vượt ngưỡng đã đặt.</p></section>';
+  const anomalyTable=geoAnomalies.length?`<section><h2>Dấu hiệu log cần xem lại (${geoAnomalies.length})</h2><table><thead><tr><th>#</th><th>Loại</th><th>Chi tiết</th></tr></thead><tbody>${geoAnomalies.map(item=>`<tr><td>${item.index+1}</td><td>${esc(item.type)}</td><td>${esc(item.detail)}</td></tr>`).join('')}</tbody></table></section>`:'<section><h2>Kiểm tra bất thường log</h2><p>Không phát hiện dấu hiệu vượt ngưỡng đã đặt.</p></section>';
   const html=`<!doctype html><html lang="vi"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Báo cáo ${esc(name)}</title><style>body{font:14px system-ui,sans-serif;max-width:1100px;margin:30px auto;padding:0 18px;color:#24312b}h1{font-size:24px}.muted{color:#68776f}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:9px}.card{border:1px solid #dfe7e2;border-radius:7px;padding:11px}.card small{display:block;color:#68776f}.card b{display:block;margin-top:5px}img{display:block;max-width:100%;margin:14px 0;border:1px solid #dfe7e2}table{border-collapse:collapse;width:100%;font-size:12px}th,td{text-align:left;padding:7px;border-bottom:1px solid #e5ebe7}th{background:#f4f7f5}section{margin-top:26px}@media print{body{margin:0 auto}.cards{break-inside:avoid}}</style><h1>Báo cáo log: ${esc(name)}</h1><p class="muted">Tạo lúc ${esc(new Date().toISOString())}${geoMap?` · Tile ${esc(geoMap.path)}`:''}</p><div class="cards">${cards.map(([label,value])=>`<div class="card"><small>${esc(label)}</small><b>${esc(value)}</b></div>`).join('')}</div>${mapImage?`<section><h2>Bản đồ và quỹ đạo</h2><img alt="Bản đồ địa hình với quỹ đạo" src="${mapImage}"></section>`:''}${chartImage?`<section><h2>Độ cao bay so với địa hình</h2><img alt="Biểu đồ cao độ bay và địa hình" src="${chartImage}"></section>`:''}${speedChartImage?`<section><h2>Tốc độ theo thời gian</h2><img alt="Biểu đồ tốc độ" src="${speedChartImage}"></section>`:''}<section><h2>Quỹ đạo phủ</h2><ul>${overlays}</ul></section>${anomalyTable}<section>${table}</section><p class="muted">AGL là chênh lệch giữa cao độ log và địa hình; chỉ diễn giải khi các nguồn dùng cùng đơn vị và mốc cao độ.</p></html>`;
   const blob=new Blob([html],{type:'text/html;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');
   link.href=url;link.download='filescope-flight-report.html';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
@@ -605,7 +613,7 @@ $('#geo-add-overlay').onclick=addGeoOverlay;
 $('#geo-clear-overlays').onclick=()=>{geoOverlays=[];renderGeoOverlays();renderGeoComparison();};
 $('#geo-analyze-terrain').onclick=analyzeGeoTerrain;
 $('#geo-agl-threshold').oninput=()=>{renderGeoStats();renderGeoLogs();drawGeoMap();};
-['geo-anomaly-max-speed','geo-anomaly-gap'].forEach(id=>$('#'+id).oninput=analyzeGeoAnomalies);
+['geo-anomaly-max-speed','geo-anomaly-gap','geo-anomaly-altitude-jump'].forEach(id=>$('#'+id).oninput=analyzeGeoAnomalies);
 bindGeoChart('geo-log-chart');bindGeoChart('geo-speed-chart');setGeoChartMode('zoom');
 $('#geo-chart-mode-zoom').onclick=()=>setGeoChartMode('zoom');
 $('#geo-chart-mode-pan').onclick=()=>setGeoChartMode('pan');
