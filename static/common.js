@@ -16,6 +16,7 @@ let monitorTab='processes',monitorPollTimer=null,monitorPollInterval=2000,monito
 const resourceHistory={cores:{},memory:[],swap:[],networkDown:[],networkUp:[]};
 const GEO_LOG_TABLE_LIMIT=1000;
 const GEO_ANOMALY_BATCH_SIZE=200;
+const RESOURCE_HISTORY_SAMPLE_COUNT=31;
 const geoTrackColors=['#3768b1','#8a55a2','#168a7a','#d68124'];
 const geoChartSeriesVisible={altitude:true,terrain:true,agl:true,speed:true};
 const previewExtensions = new Set(['txt','log','md','csv','json','xml','yaml','yml','toml','ini','conf','py','js','css','sh','sql','html','htm','rtf','pdf','png','jpg','jpeg','gif','webp','bmp','avif']);

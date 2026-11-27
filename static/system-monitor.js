@@ -59,7 +59,7 @@ function updateProcessHistorySelector() {
 function recordProcessHistory() {
   const row=processRows.find(item=>String(item.pid)===selectedProcessHistoryPid);if(!row)return;
   processHistorySamples.push({time:Date.now(),cpu:row.cpu_percent,memory:row.memory_percent,cores:row.cpu_cores||[]});
-  if(processHistorySamples.length>30)processHistorySamples.shift();
+  if(processHistorySamples.length>RESOURCE_HISTORY_SAMPLE_COUNT)processHistorySamples.shift();
   renderProcessHistory();
 }
 
@@ -122,6 +122,13 @@ function formatRate(bytesPerSecond) {
   return rate<1024?`${Math.round(rate)} B/s`:`${size(rate)}/s`;
 }
 
+function formatResourceHistoryAge(seconds) {
+  const wholeSeconds=Math.max(0,Math.round(seconds));
+  const minutes=Math.floor(wholeSeconds/60),remaining=wholeSeconds%60;
+  if(!minutes)return `${wholeSeconds} giây`;
+  return remaining?`${minutes} phút ${remaining} giây`:`${minutes} phút`;
+}
+
 function drawResourceChart(id,series,{max=100,valueLabel=value=>`${value.toFixed(0)}%`}={}) {
   const canvas=$('#'+id),rect=canvas.getBoundingClientRect(),dpr=window.devicePixelRatio||1;
   if(rect.width<2||rect.height<2)return;
@@ -131,8 +138,9 @@ function drawResourceChart(id,series,{max=100,valueLabel=value=>`${value.toFixed
   ctx.font='10px sans-serif';ctx.textBaseline='middle';ctx.textAlign='right';ctx.lineWidth=1;
   for(let tick=0;tick<=2;tick++){const ratio=tick/2,y=top+height*(1-ratio);ctx.strokeStyle='#e5e8e7';ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(left+width,y);ctx.stroke();ctx.fillStyle='#7b8581';ctx.fillText(valueLabel(max*ratio),rect.width-4,y);}
   for(let tick=0;tick<=6;tick++){const x=left+width*tick/6;ctx.strokeStyle='#eceeed';ctx.beginPath();ctx.moveTo(x,top);ctx.lineTo(x,top+height);ctx.stroke();}
-  ctx.fillStyle='#7b8581';ctx.textBaseline='top';ctx.textAlign='left';ctx.fillText('1 phút',left,rect.height-bottom+5);ctx.textAlign='center';ctx.fillText('30 giây',left+width/2,rect.height-bottom+5);ctx.textAlign='right';ctx.fillText('hiện tại',left+width,rect.height-bottom+5);
-  for(const line of series){const values=line.values||[];if(values.length<2)continue;const offset=Math.max(0,30-values.length);ctx.strokeStyle=line.color;ctx.lineWidth=1.8;ctx.lineJoin='round';ctx.lineCap='round';ctx.beginPath();values.forEach((value,index)=>{const x=left+(offset+index)/29*width,y=top+height-Math.max(0,Math.min(1,value/max))*height;if(index)ctx.lineTo(x,y);else ctx.moveTo(x,y);});ctx.stroke();}
+  const historyIntervals=RESOURCE_HISTORY_SAMPLE_COUNT-1,historySpanSeconds=monitorPollInterval*historyIntervals/1000;
+  ctx.fillStyle='#7b8581';ctx.textBaseline='top';ctx.textAlign='left';ctx.fillText(formatResourceHistoryAge(historySpanSeconds),left,rect.height-bottom+5);ctx.textAlign='center';ctx.fillText(formatResourceHistoryAge(historySpanSeconds/2),left+width/2,rect.height-bottom+5);ctx.textAlign='right';ctx.fillText('hiện tại',left+width,rect.height-bottom+5);
+  for(const line of series){const values=line.values||[];if(values.length<2)continue;const offset=Math.max(0,RESOURCE_HISTORY_SAMPLE_COUNT-values.length);ctx.strokeStyle=line.color;ctx.lineWidth=1.8;ctx.lineJoin='round';ctx.lineCap='round';ctx.beginPath();values.forEach((value,index)=>{const x=left+(offset+index)/historyIntervals*width,y=top+height-Math.max(0,Math.min(1,value/max))*height;if(index)ctx.lineTo(x,y);else ctx.moveTo(x,y);});ctx.stroke();}
 }
 
 const resourceColors=['#e91e63','#ff7f2a','#ffd600','#a8e63c','#7e57c2','#00a7a7','#607d8b','#f44336','#8bc34a','#03a9f4','#c2185b','#9c27b0'];
@@ -174,13 +182,13 @@ async function loadResources() {
   updateMonitorHealth({cpu:cores.length?Math.max(...cores.map(core=>core.percent)):null,memory:data.memory.percent,temperature:data.temperature?.celsius??null});
   const coreNames=new Set(cores.map(core=>core.name));
   Object.keys(resourceHistory.cores).forEach(name=>{if(!coreNames.has(name))delete resourceHistory.cores[name];});
-  cores.forEach(core=>{const history=resourceHistory.cores[core.name]||(resourceHistory.cores[core.name]=[]);history.push(core.percent);if(history.length>30)history.shift();});
+  cores.forEach(core=>{const history=resourceHistory.cores[core.name]||(resourceHistory.cores[core.name]=[]);history.push(core.percent);if(history.length>RESOURCE_HISTORY_SAMPLE_COUNT)history.shift();});
   const previousInterfaces=new Map((resourceSample?.interfaces||[]).map(item=>[item.name,item]));
   const interfaces=data.interfaces.map(item=>{const before=previousInterfaces.get(item.name);return {...item,rx_rate:before&&elapsed>0?Math.max(0,(item.rx_bytes-before.rx_bytes)/elapsed):0,tx_rate:before&&elapsed>0?Math.max(0,(item.tx_bytes-before.tx_bytes)/elapsed):0};});
   resourceSample=data;
   resourceHistory.memory.push(data.memory.percent);resourceHistory.swap.push(data.swap.percent);
   resourceHistory.networkDown.push(interfaces.reduce((sum,item)=>sum+item.rx_rate,0));resourceHistory.networkUp.push(interfaces.reduce((sum,item)=>sum+item.tx_rate,0));
-  for(const key of ['memory','swap','networkDown','networkUp'])if(resourceHistory[key].length>30)resourceHistory[key].shift();
+  for(const key of ['memory','swap','networkDown','networkUp'])if(resourceHistory[key].length>RESOURCE_HISTORY_SAMPLE_COUNT)resourceHistory[key].shift();
   const received=interfaces.reduce((sum,item)=>sum+item.rx_bytes,0),sent=interfaces.reduce((sum,item)=>sum+item.tx_bytes,0);
   const memoryUsed=data.memory.display_used||systemBytes(data.memory.used),memoryTotal=data.memory.display_total||systemBytes(data.memory.total);
   $('#memory-detail').textContent=`${memoryUsed} (${data.memory.percent.toFixed(1)}%) của ${memoryTotal}`;
